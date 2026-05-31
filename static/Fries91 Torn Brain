@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.1-step8-fetchfix
-// @description  Self-learning Torn profit and war intel app. Step 8.1: PDA fetch fix using GM_xmlhttpRequest plus clearer backend connection errors.
+// @version      1.8.2-step8-sessionfix
+// @description  Self-learning Torn profit and war intel app. Step 8.2: login persistence/session fix, PDA fetch fix, and clearer backend connection errors.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -22,6 +22,7 @@
   const API_BASE = 'https://fries91-torn-profit-brain.onrender.com';
 
   const K_TOKEN = 'fries91_torn_brain_token_v1';
+  const K_TOKEN_BACKUP = 'fries91_torn_brain_token_backup_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
   const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Alerts', 'Accuracy', 'Settings'];
 
@@ -32,6 +33,7 @@
   let refreshTimer = null;
   let refreshBusy = false;
   let lastStateRefresh = 0;
+  let authToken = '';
 
   GM_addStyle(`
     @keyframes tbPulseGlow {
@@ -346,8 +348,27 @@
     }
   `);
 
-  function token() { return GM_getValue(K_TOKEN, ''); }
-  function setToken(v) { if (v) GM_setValue(K_TOKEN, v); else GM_deleteValue(K_TOKEN); }
+  function token() {
+    if (authToken) return authToken;
+    let gmTok = '';
+    let lsTok = '';
+    try { gmTok = GM_getValue(K_TOKEN, '') || ''; } catch (_) {}
+    try { lsTok = window.localStorage.getItem(K_TOKEN_BACKUP) || ''; } catch (_) {}
+    authToken = gmTok || lsTok || '';
+    return authToken;
+  }
+
+  function setToken(v) {
+    authToken = v || '';
+    try {
+      if (authToken) GM_setValue(K_TOKEN, authToken);
+      else GM_deleteValue(K_TOKEN);
+    } catch (_) {}
+    try {
+      if (authToken) window.localStorage.setItem(K_TOKEN_BACKUP, authToken);
+      else window.localStorage.removeItem(K_TOKEN_BACKUP);
+    } catch (_) {}
+  }
 
   function api(path, options = {}) {
     const method = options.method || 'GET';
@@ -368,7 +389,10 @@
           try { data = JSON.parse(res.responseText || '{}'); }
           catch (_) { data = { ok: false, error: 'Bad server response from Render.' }; }
           if (res.status < 200 || res.status >= 300 || !data.ok) {
-            reject(new Error((data && data.error) || ('Server returned HTTP ' + res.status)));
+            const err = new Error((data && data.error) || ('Server returned HTTP ' + res.status));
+            err.status = res.status;
+            err.payload = data;
+            reject(err);
             return;
           }
           resolve(data);
@@ -394,7 +418,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.1 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.2 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -461,8 +485,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.1 Includes</h3>
-        <div class="tb-muted">PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
+        <h3>Step 8.2 Includes</h3>
+        <div class="tb-muted">Login persistence fix, PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
@@ -1339,6 +1363,7 @@
     msg.textContent = 'Connecting...';
     try {
       const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ api_key: key }) });
+      if (!data.token) throw new Error('Backend login worked but no session token came back.');
       setToken(data.token);
       try { await api('/api/auto/start', { method: 'POST', body: '{}' }); } catch (_) {}
       state = await api('/api/state');
@@ -1364,10 +1389,22 @@
       updateBadge();
       if (!silent && activeTab === 'Overview') render();
     } catch (e) {
-      setToken('');
-      state = null;
-      updateBadge();
-      if (!silent) render();
+      // Do NOT log the user out for a normal Render wake-up/network hiccup.
+      // Only clear the saved token when the backend clearly says the token is invalid.
+      if (e.status === 401 || e.status === 403) {
+        setToken('');
+        state = null;
+        updateBadge();
+        if (!silent) render();
+      } else {
+        updateBadge();
+        if (!silent && activeTab === 'Overview') {
+          const body = el('tb-body');
+          if (body && token()) {
+            body.innerHTML = `<div class="tb-card"><h3>Still Logged In</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-muted">Render may be waking up or TornPDA blocked a refresh. Your saved login was kept. Change tabs or tap refresh again.</div></div>`;
+          }
+        }
+      }
     } finally {
       refreshBusy = false;
     }
