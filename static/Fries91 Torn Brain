@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.0.0-step1
-// @description  Self-learning Torn profit and war intel app shell. Step 1: login, tabs, alerts, settings.
+// @version      1.1.0-step1.5-theme
+// @description  Self-learning Torn profit and war intel app shell. Step 1.5: animated AI profit theme.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -30,41 +30,78 @@
   let refreshTimer = null;
 
   GM_addStyle(`
+    @keyframes tbPulseGlow {
+      0%, 100% { box-shadow: 0 0 10px rgba(34,197,94,.45), 0 0 24px rgba(250,204,21,.20), 0 8px 24px rgba(0,0,0,.70); transform: translateZ(0) scale(1); }
+      50% { box-shadow: 0 0 18px rgba(34,197,94,.85), 0 0 36px rgba(250,204,21,.38), 0 8px 30px rgba(0,0,0,.80); transform: translateZ(0) scale(1.04); }
+    }
+    @keyframes tbScanLine {
+      0% { transform: translateX(-110%); opacity: .2; }
+      40% { opacity: 1; }
+      100% { transform: translateX(110%); opacity: .2; }
+    }
+    @keyframes tbFadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes tbGridMove {
+      from { background-position: 0 0, 0 0; }
+      to { background-position: 0 0, 38px 38px; }
+    }
+    @keyframes tbShimmer {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(120%); }
+    }
     #tb-icon {
       position: fixed;
       left: 12px;
       bottom: 78px;
       z-index: 2147483647;
-      width: 42px;
+      min-width: 58px;
       height: 42px;
-      border-radius: 14px;
-      background: linear-gradient(135deg, #121212, #2b210a);
-      border: 1px solid #d7a640;
-      color: #ffd76a;
+      padding: 0 8px;
+      border-radius: 15px;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(34,197,94,.35), transparent 34%),
+        linear-gradient(135deg, #07110b, #111827 45%, #2a1d08);
+      border: 1px solid rgba(250,204,21,.88);
+      color: #dcfce7;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 22px;
-      font-weight: 900;
-      box-shadow: 0 8px 24px rgba(0,0,0,.55);
+      font-size: 16px;
+      font-weight: 1000;
+      letter-spacing: .4px;
+      text-shadow: 0 0 8px rgba(34,197,94,.95), 0 0 10px rgba(250,204,21,.55);
+      box-shadow: 0 8px 24px rgba(0,0,0,.70);
       cursor: pointer;
       user-select: none;
       touch-action: manipulation;
+      animation: tbPulseGlow 2.4s ease-in-out infinite;
+      overflow: visible;
+    }
+    #tb-icon:before {
+      content: '';
+      position: absolute;
+      inset: 5px;
+      border-radius: 12px;
+      border: 1px solid rgba(34,197,94,.22);
+      pointer-events: none;
     }
     #tb-icon .tb-badge {
       position: absolute;
-      top: -6px;
-      right: -6px;
+      top: -7px;
+      right: -7px;
       min-width: 18px;
       height: 18px;
       padding: 0 4px;
       border-radius: 999px;
-      background: #b91c1c;
+      background: #dc2626;
       color: #fff;
       font-size: 11px;
       line-height: 18px;
       text-align: center;
-      border: 1px solid #fff3;
+      border: 1px solid rgba(254,242,242,.7);
+      box-shadow: 0 0 12px rgba(239,68,68,.75);
       display: none;
     }
     #tb-panel {
@@ -74,44 +111,80 @@
       top: 54px;
       bottom: 16px;
       z-index: 2147483646;
-      background: #0b0b0d;
-      color: #f8f3df;
-      border: 1px solid #a77a2f;
-      border-radius: 16px;
-      box-shadow: 0 18px 48px rgba(0,0,0,.72);
+      color: #f7fee7;
+      border: 1px solid rgba(250,204,21,.70);
+      border-radius: 18px;
+      box-shadow: 0 20px 58px rgba(0,0,0,.78), 0 0 36px rgba(34,197,94,.12);
       display: none;
       overflow: hidden;
       font-family: Arial, Helvetica, sans-serif;
       max-width: 760px;
       margin: 0 auto;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(34,197,94,.18), transparent 28%),
+        radial-gradient(circle at 100% 10%, rgba(250,204,21,.12), transparent 30%),
+        linear-gradient(180deg, rgba(5,10,7,.98), rgba(9,9,11,.98));
     }
-    #tb-panel.tb-show { display: flex; flex-direction: column; }
+    #tb-panel:before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(34,197,94,.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34,197,94,.045) 1px, transparent 1px);
+      background-size: 38px 38px;
+      pointer-events: none;
+      animation: tbGridMove 8s linear infinite;
+    }
+    #tb-panel.tb-show { display: flex; flex-direction: column; animation: tbFadeUp .18s ease-out; }
+    .tb-head, .tb-tabs, .tb-body { position: relative; z-index: 1; }
     .tb-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 10px 12px;
-      background: linear-gradient(90deg, #14110b, #211704);
-      border-bottom: 1px solid #6f5120;
+      padding: 11px 12px;
+      background: linear-gradient(90deg, rgba(5,20,12,.96), rgba(24,18,6,.96));
+      border-bottom: 1px solid rgba(250,204,21,.40);
+      overflow: hidden;
+    }
+    .tb-head:after {
+      content: '';
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #22c55e, #facc15, transparent);
+      animation: tbScanLine 2.2s linear infinite;
     }
     .tb-title {
       font-size: 15px;
-      font-weight: 900;
-      color: #ffd76a;
+      font-weight: 1000;
+      color: #fef08a;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      text-shadow: 0 0 10px rgba(250,204,21,.35);
+    }
+    .tb-subtitle {
+      display: block;
+      color: #86efac;
+      font-size: 10px;
+      margin-top: 1px;
+      letter-spacing: .7px;
+      text-transform: uppercase;
     }
     .tb-close, .tb-btn {
-      border: 1px solid #8c692b;
-      background: #1a1510;
-      color: #ffe7a6;
-      border-radius: 10px;
+      border: 1px solid rgba(250,204,21,.50);
+      background: linear-gradient(180deg, rgba(22,30,18,.96), rgba(10,14,10,.96));
+      color: #fef9c3;
+      border-radius: 11px;
       padding: 8px 10px;
-      font-weight: 800;
+      font-weight: 900;
       cursor: pointer;
       touch-action: manipulation;
+      box-shadow: inset 0 0 14px rgba(34,197,94,.07), 0 4px 12px rgba(0,0,0,.35);
     }
     .tb-close { min-width: 38px; }
     .tb-tabs {
@@ -119,25 +192,26 @@
       gap: 6px;
       overflow-x: auto;
       padding: 8px;
-      border-bottom: 1px solid #2d2415;
-      background: #100f11;
+      border-bottom: 1px solid rgba(34,197,94,.15);
+      background: rgba(4,8,6,.82);
     }
     .tb-tab {
       flex: 0 0 auto;
-      border: 1px solid #3d321f;
-      background: #151515;
-      color: #d9cda8;
+      border: 1px solid rgba(74,222,128,.18);
+      background: rgba(15,23,18,.88);
+      color: #bbf7d0;
       border-radius: 999px;
       padding: 7px 10px;
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 900;
       cursor: pointer;
       touch-action: manipulation;
     }
     .tb-tab.active {
-      border-color: #d7a640;
-      background: #2a1d08;
-      color: #ffd76a;
+      border-color: rgba(250,204,21,.80);
+      background: linear-gradient(135deg, rgba(20,83,45,.88), rgba(113,63,18,.72));
+      color: #fef08a;
+      box-shadow: 0 0 14px rgba(34,197,94,.18);
     }
     .tb-body {
       overflow: auto;
@@ -147,57 +221,92 @@
       flex: 1;
     }
     .tb-card {
-      border: 1px solid #3b2e18;
-      background: #111113;
-      border-radius: 14px;
-      padding: 10px;
+      position: relative;
+      border: 1px solid rgba(74,222,128,.18);
+      background: linear-gradient(180deg, rgba(15,23,18,.88), rgba(9,9,11,.90));
+      border-radius: 16px;
+      padding: 11px;
       margin-bottom: 10px;
+      box-shadow: inset 0 0 18px rgba(34,197,94,.04), 0 8px 18px rgba(0,0,0,.32);
+      overflow: hidden;
+      animation: tbFadeUp .18s ease-out;
+    }
+    .tb-card:before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(34,197,94,.6), rgba(250,204,21,.45), transparent);
     }
     .tb-card h3 {
       margin: 0 0 8px;
-      color: #ffd76a;
+      color: #fef08a;
       font-size: 14px;
+      text-shadow: 0 0 10px rgba(250,204,21,.18);
     }
-    .tb-muted { color: #b7ad91; font-size: 12px; line-height: 1.35; }
+    .tb-muted { color: #c9d7bd; font-size: 12px; line-height: 1.38; }
     .tb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .tb-pill {
       display: inline-block;
       padding: 3px 7px;
       border-radius: 999px;
-      background: #211804;
-      border: 1px solid #6f5120;
-      color: #ffd76a;
+      background: rgba(20,83,45,.42);
+      border: 1px solid rgba(74,222,128,.30);
+      color: #bbf7d0;
       font-size: 11px;
-      font-weight: 800;
+      font-weight: 900;
+    }
+    .tb-ai-pill {
+      background: rgba(113,63,18,.45);
+      border-color: rgba(250,204,21,.55);
+      color: #fef08a;
     }
     .tb-input, .tb-select {
       width: 100%;
       box-sizing: border-box;
-      border: 1px solid #5b431b;
-      background: #080809;
-      color: #fff4d1;
-      border-radius: 10px;
+      border: 1px solid rgba(74,222,128,.28);
+      background: rgba(3,7,5,.96);
+      color: #f7fee7;
+      border-radius: 11px;
       padding: 10px;
       margin: 6px 0;
       outline: none;
     }
     .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-    .tb-danger { border-color: #7f1d1d; color: #fecaca; }
-    .tb-ok { color: #bbf7d0; }
+    .tb-danger { border-color: rgba(248,113,113,.55); color: #fecaca; }
+    .tb-ok { color: #86efac; }
     .tb-warn { color: #fde68a; }
     .tb-err { color: #fecaca; }
-    .tb-link {
-      color: #ffe08a;
-      text-decoration: underline;
+    .tb-link { color: #fef08a; text-decoration: underline; font-weight: 900; }
+    .tb-scan {
+      position: relative;
+      overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid rgba(74,222,128,.18);
+      background: rgba(0,0,0,.22);
+      padding: 8px;
+      margin-top: 8px;
+      color: #86efac;
+      font-size: 12px;
       font-weight: 800;
     }
-    @media (min-width: 820px) {
-      #tb-panel { left: auto; width: 760px; right: 18px; }
+    .tb-scan:after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 42%;
+      background: linear-gradient(90deg, transparent, rgba(34,197,94,.18), transparent);
+      animation: tbShimmer 1.8s linear infinite;
     }
+    @media (min-width: 820px) { #tb-panel { left: auto; width: 760px; right: 18px; } }
     @media (max-width: 420px) {
-      #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 14px; }
+      #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 15px; }
       .tb-grid { grid-template-columns: 1fr; }
       .tb-title { font-size: 14px; }
+      #tb-icon { bottom: 72px; min-width: 56px; height: 40px; font-size: 15px; }
     }
   `);
 
@@ -222,14 +331,14 @@
 
     const icon = document.createElement('div');
     icon.id = 'tb-icon';
-    icon.innerHTML = '🧠<span class="tb-badge" id="tb-badge">0</span>';
+    icon.innerHTML = 'AI🫰<span class="tb-badge" id="tb-badge">0</span>';
     document.body.appendChild(icon);
 
     const panel = document.createElement('div');
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">🧠 Fries91 Torn Brain <span class="tb-pill">Step 1</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 1.5</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -296,8 +405,9 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 1 Includes</h3>
-        <div class="tb-muted">Backend shell, SQLite, login, masked key, state endpoint, settings, alerts, and all future tabs prepared.</div>
+        <h3>Step 1.5 Includes</h3>
+        <div class="tb-muted">Animated AI🫰 badge, wicked self-learning theme, scan effects, neon profit cards, login, alerts, settings, and all future tabs prepared.</div>
+        <div class="tb-scan">Theme engine active · modules warming up</div>
       </div>
     `;
   }
@@ -318,6 +428,7 @@
       <div class="tb-card">
         <h3>Best Move Right Now</h3>
         <div class="tb-muted">Step 2 will add the first real analyzer: Stock Brain. After that we plug in Item Market, Points, Travel, and Enemy Sleep.</div>
+        <div class="tb-scan">AI learning engine online · waiting for market modules</div>
       </div>
       <div class="tb-card">
         <h3>Modules</h3>
