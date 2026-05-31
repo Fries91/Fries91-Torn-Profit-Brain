@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.2.1-step2-auto-stock-brain
-// @description  Self-learning Torn profit and war intel app shell. Step 2.1: backend auto scanner with Stock Brain analyzer.
+// @version      1.8.0-step8-polish
+// @description  Self-learning Torn profit and war intel app shell. Step 8: polished PDA dashboard, smoother refresh, compact layout, and backend-first display.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -25,9 +25,12 @@
   const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Alerts', 'Accuracy', 'Settings'];
 
   let state = null;
-  let activeTab = 'Overview';
+  let dashboard = null;
+  let activeTab = GM_getValue('fries91_torn_brain_tab_v1', 'Overview');
   let mounted = false;
   let refreshTimer = null;
+  let refreshBusy = false;
+  let lastStateRefresh = 0;
 
   GM_addStyle(`
     @keyframes tbPulseGlow {
@@ -108,12 +111,12 @@
       position: fixed;
       left: 8px;
       right: 8px;
-      top: 54px;
-      bottom: 16px;
+      top: 50px;
+      bottom: 10px;
       z-index: 2147483646;
       color: #f7fee7;
       border: 1px solid rgba(250,204,21,.70);
-      border-radius: 18px;
+      border-radius: 16px;
       box-shadow: 0 20px 58px rgba(0,0,0,.78), 0 0 36px rgba(34,197,94,.12);
       display: none;
       overflow: hidden;
@@ -143,7 +146,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 11px 12px;
+      padding: 9px 10px;
       background: linear-gradient(90deg, rgba(5,20,12,.96), rgba(24,18,6,.96));
       border-bottom: 1px solid rgba(250,204,21,.40);
       overflow: hidden;
@@ -191,7 +194,10 @@
       display: flex;
       gap: 6px;
       overflow-x: auto;
-      padding: 8px;
+      padding: 7px 8px;
+      scrollbar-width: thin;
+      position: sticky;
+      top: 0;
       border-bottom: 1px solid rgba(34,197,94,.15);
       background: rgba(4,8,6,.82);
     }
@@ -201,8 +207,8 @@
       background: rgba(15,23,18,.88);
       color: #bbf7d0;
       border-radius: 999px;
-      padding: 7px 10px;
-      font-size: 12px;
+      padding: 7px 9px;
+      font-size: 11px;
       font-weight: 900;
       cursor: pointer;
       touch-action: manipulation;
@@ -305,6 +311,31 @@
     .tb-score { font-size: 20px; font-weight: 1000; color: #86efac; text-shadow: 0 0 10px rgba(34,197,94,.35); }
     .tb-mini-row { display:flex; justify-content:space-between; gap:8px; border-top:1px solid rgba(74,222,128,.12); padding:7px 0; font-size:12px; }
     .tb-mini-row:first-child { border-top:0; }
+    .tb-market-row { border-top:1px solid rgba(74,222,128,.12); padding:9px 0; }
+    .tb-market-title { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; font-size:13px; }
+    .tb-signal-buy { color:#86efac; text-shadow:0 0 10px rgba(34,197,94,.35); }
+    .tb-signal-sell { color:#fef08a; text-shadow:0 0 10px rgba(250,204,21,.25); }
+    .tb-signal-hold { color:#c9d7bd; }
+
+    .tb-dashboard-card { border-color: rgba(250,204,21,.60); background: linear-gradient(180deg, rgba(20,83,45,.28), rgba(8,13,9,.92)); }
+    .tb-hero { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    .tb-hero-main { flex:1 1 170px; }
+    .tb-hero-label { color:#fef08a; font-size:11px; font-weight:1000; letter-spacing:.8px; text-transform:uppercase; }
+    .tb-hero-title { color:#dcfce7; font-size:20px; font-weight:1000; line-height:1.1; margin-top:4px; text-shadow:0 0 12px rgba(34,197,94,.24); }
+    .tb-hero-detail { color:#bbf7d0; font-size:12px; margin-top:5px; }
+    .tb-status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 10px rgba(34,197,94,.8); margin-right:5px; }
+    .tb-kpi-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; }
+    .tb-kpi { border:1px solid rgba(74,222,128,.18); border-radius:14px; padding:9px; background:rgba(2,6,4,.42); min-height:68px; }
+    .tb-kpi small { display:block; color:#86efac; font-weight:900; font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
+    .tb-kpi strong { display:block; color:#fef9c3; font-size:15px; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tb-kpi span { display:block; color:#c9d7bd; font-size:11px; margin-top:3px; }
+    .tb-compact-list { display:grid; gap:7px; }
+    .tb-compact-row { border:1px solid rgba(74,222,128,.12); border-radius:12px; padding:8px; background:rgba(0,0,0,.18); font-size:12px; }
+    .tb-refresh-line { font-size:10px; color:#86efac; margin-top:7px; }
+    .tb-btn:active, .tb-tab:active, #tb-icon:active { transform: scale(.97); }
+    .tb-body { scroll-behavior:smooth; }
+    .tb-sticky-actions { position:sticky; bottom:0; padding:8px 0 0; background:linear-gradient(180deg, transparent, rgba(5,10,7,.96) 42%); }
+
     @media (min-width: 820px) { #tb-panel { left: auto; width: 760px; right: 18px; } }
     @media (max-width: 420px) {
       #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 15px; }
@@ -342,7 +373,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 2.1 Auto</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -379,8 +410,8 @@
     if (!tabs) return;
     tabs.innerHTML = TABS.map(t => `<button class="tb-tab ${t === activeTab ? 'active' : ''}" data-tab="${t}">${t}</button>`).join('');
     tabs.querySelectorAll('.tb-tab').forEach(btn => {
-      btn.addEventListener('click', () => { activeTab = btn.dataset.tab; renderTabs(); render(); });
-      btn.addEventListener('touchend', (e) => { e.preventDefault(); activeTab = btn.dataset.tab; renderTabs(); render(); }, { passive: false });
+      btn.addEventListener('click', () => { activeTab = btn.dataset.tab; GM_setValue('fries91_torn_brain_tab_v1', activeTab); renderTabs(); render(); });
+      btn.addEventListener('touchend', (e) => { e.preventDefault(); activeTab = btn.dataset.tab; GM_setValue('fries91_torn_brain_tab_v1', activeTab); renderTabs(); render(); }, { passive: false });
     });
   }
 
@@ -409,11 +440,76 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 2.1 Includes</h3>
-        <div class="tb-muted">Animated AI🫰 badge, backend auto scanning after login, shared Stock Brain learning, 24h pick, drastic-change rules, alerts, settings, and all future tabs prepared.</div>
-        <div class="tb-scan">Stock Brain active · backend watcher online</div>
+        <h3>Step 8 Includes</h3>
+        <div class="tb-muted">Animated AI🫰 badge, smoother PDA layout, backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
+        <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
+  }
+
+  async function renderOverviewLive() {
+    const body = el('tb-body');
+    if (!body) return;
+    if (!state) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card tb-dashboard-card"><h3>AI🫰 Dashboard</h3><div class="tb-scan">Loading saved backend results...</div></div>`;
+    try {
+      dashboard = await api('/api/dashboard');
+      const u = dashboard.user || state.user || {};
+      const auto = dashboard.auto_scan || state.auto_scan || {};
+      const best = dashboard.best_move || {};
+      const stock = dashboard.stock_pick || {};
+      const points = dashboard.points || {};
+      const travel = dashboard.travel_best || {};
+      const enemyReport = dashboard.enemy?.report || {};
+      const enemySession = dashboard.enemy?.session || {};
+      const items = dashboard.items || [];
+      const alerts = dashboard.latest_alerts || [];
+      body.innerHTML = `
+        <div class="tb-card tb-dashboard-card">
+          <div class="tb-hero">
+            <div class="tb-hero-main">
+              <div class="tb-hero-label"><span class="tb-status-dot"></span>Best Move Right Now</div>
+              <div class="tb-hero-title">${escapeHtml(best.label || 'Learning')}</div>
+              <div class="tb-hero-detail">${escapeHtml(best.detail || 'Waiting for more backend snapshots')}</div>
+            </div>
+            <span class="tb-pill ${signalClass(best.signal)}">${escapeHtml(best.signal || 'WATCH')}</span>
+          </div>
+          <div class="tb-refresh-line">Backend-first display · last scan ${escapeHtml(shortTime(auto.last_scan_at))} · next ${escapeHtml(shortTime(auto.next_scan_at))}</div>
+        </div>
+        <div class="tb-kpi-grid">
+          ${kpi('Stock Pick', stock.acronym || 'Learning', stock.confidence ? 'Confidence ' + Number(stock.confidence).toFixed(0) + '%' : 'Need snapshots')}
+          ${kpi('Points', points.signal || 'WAITING', points.latest?.lowest_price ? fmtMoney(points.latest.lowest_price) : 'Need scan')}
+          ${kpi('Travel', travel.signal || 'WAITING', travel.country ? travel.country + ' · ' + travel.item_name : 'Need route data')}
+          ${kpi('Enemy', enemySession.enemy_faction_name || 'Not tracking', enemyReport.best_attack_window || 'Start during war')}
+        </div>
+        <div class="tb-card">
+          <h3>Quick Market Watch</h3>
+          <div class="tb-compact-list">
+            ${(items || []).slice(0,4).map(it => `<div class="tb-compact-row"><b>${escapeHtml(it.name)}</b> <span class="${signalClass(it.signal)}">${escapeHtml(it.signal)}</span><br><span class="tb-muted">Current ${it.latest?.lowest_price ? fmtMoney(it.latest.lowest_price) : 'waiting'} · buy zone ${it.buy_zone ? fmtMoney(it.buy_zone) : 'auto'}</span></div>`).join('') || '<div class="tb-muted">Add watched items in Item Market to fill this section.</div>'}
+          </div>
+        </div>
+        <div class="tb-card">
+          <h3>Latest Alerts</h3>
+          <div class="tb-compact-list">
+            ${alerts.map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span>${a.link ? `<br><a class="tb-link" href="${escapeHtml(a.link)}">Open</a>` : ''}</div>`).join('') || '<div class="tb-muted">No alerts yet.</div>'}
+          </div>
+        </div>
+        <div class="tb-card">
+          <h3>Status</h3>
+          <div class="tb-grid">
+            <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
+            <div><span class="tb-pill">Alerts</span><br>${escapeHtml(dashboard.unread_alerts || 0)} unread</div>
+            <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
+            <div><span class="tb-pill">Server</span><br>${escapeHtml(shortTime(dashboard.server_time))}</div>
+          </div>
+          <div class="tb-sticky-actions"><button class="tb-btn" id="tb-overview-refresh">Refresh Dashboard</button></div>
+        </div>
+      `;
+      el('tb-overview-refresh')?.addEventListener('click', () => renderOverviewLive());
+      await refreshState(true);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Overview</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-muted">The backend may be waking up. Try refresh again after Render responds.</div></div>`;
+    }
   }
 
   function renderOverview() {
@@ -421,36 +517,18 @@
     const u = state.user || {};
     const auto = state.auto_scan || {};
     return `
-      <div class="tb-card">
+      <div class="tb-card tb-dashboard-card">
         <h3>Overview</h3>
         <div class="tb-grid">
           <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-          <div><span class="tb-pill">Faction</span><br>${escapeHtml(u.faction_name || 'None')} ${u.faction_id ? '[' + escapeHtml(u.faction_id) + ']' : ''}</div>
           <div><span class="tb-pill">Alerts</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
-          <div><span class="tb-pill">Server</span><br>${escapeHtml(state.server_time || 'online')}</div>
           <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
-          <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(auto.last_scan_at || 'starting soon')}</div>
-          <div><span class="tb-pill">Next Scan</span><br>${escapeHtml(auto.next_scan_at || 'queued')}</div>
+          <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(shortTime(auto.last_scan_at))}</div>
         </div>
-      </div>
-      <div class="tb-card">
-        <h3>Best Move Right Now</h3>
-        <div class="tb-muted">Stock Brain now runs mostly from the backend. After login, Render keeps watching and saving snapshots so TornPDA stays smooth.</div>
-        <div class="tb-scan">AI learning engine online · backend scanner feeding the global brain</div>
-      </div>
-      <div class="tb-card">
-        <h3>Modules</h3>
-        <div class="tb-muted">
-          Stock Brain: Active<br>
-          Item Market: Step 3<br>
-          Points Watcher: Step 4<br>
-          Travel Profit: Step 5<br>
-          Enemy Sleep: Step 6<br>
-          Accuracy Learning: Step 7
-        </div>
-      </div>
-    `;
+        <div class="tb-scan">AI learning engine online · backend-first Step 8 smooth mode</div>
+      </div>`;
   }
+
 
   async function renderAlerts() {
     const body = el('tb-body');
@@ -506,6 +584,11 @@
           <input class="tb-input" id="set-gap" value="${escapeHtml(s.stock_pick_change_score_gap)}">
           <label class="tb-muted">Enemy tracking window hours</label>
           <input class="tb-input" id="set-enemy" value="${escapeHtml(s.enemy_tracking_window_hours)}">
+          <label class="tb-muted">Enemy window alerts enabled</label>
+          <select class="tb-select" id="set-enemy-alerts">
+            <option value="true" ${s.enemy_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.enemy_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
           <label class="tb-muted">Auto backend scanning</label>
           <select class="tb-select" id="set-auto">
             <option value="true" ${s.auto_scan_enabled === 'true' ? 'selected' : ''}>true</option>
@@ -521,6 +604,38 @@
             <option value="true" ${s.share_market_learning !== 'false' ? 'selected' : ''}>true</option>
             <option value="false" ${s.share_market_learning === 'false' ? 'selected' : ''}>false</option>
           </select>
+          <label class="tb-muted">Item alerts enabled</label>
+          <select class="tb-select" id="set-item-alerts">
+            <option value="true" ${s.item_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.item_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <label class="tb-muted">Default item buy discount %</label>
+          <input class="tb-input" id="set-item-buy-discount" value="${escapeHtml(s.item_default_buy_discount_pct || '3')}">
+          <label class="tb-muted">Default item sell markup %</label>
+          <input class="tb-input" id="set-item-sell-markup" value="${escapeHtml(s.item_default_sell_markup_pct || '6')}">
+          <label class="tb-muted">Points alerts enabled</label>
+          <select class="tb-select" id="set-points-alerts">
+            <option value="true" ${s.points_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.points_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <div class="tb-grid">
+            <input class="tb-input" id="set-points-buy-zone" placeholder="Points buy zone optional" value="${escapeHtml(s.points_buy_zone || '')}">
+            <input class="tb-input" id="set-points-sell-zone" placeholder="Points sell zone optional" value="${escapeHtml(s.points_sell_zone || '')}">
+          </div>
+          <div class="tb-grid">
+            <input class="tb-input" id="set-points-buy-discount" placeholder="Auto buy discount %" value="${escapeHtml(s.points_default_buy_discount_pct || '2')}">
+            <input class="tb-input" id="set-points-sell-markup" placeholder="Auto sell markup %" value="${escapeHtml(s.points_default_sell_markup_pct || '4')}">
+          </div>
+          <label class="tb-muted">Travel alerts enabled</label>
+          <select class="tb-select" id="set-travel-alerts">
+            <option value="true" ${s.travel_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.travel_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <div class="tb-grid">
+            <input class="tb-input" id="set-travel-min-profit" placeholder="Travel minimum profit" value="${escapeHtml(s.travel_min_profit || '50000')}">
+            <input class="tb-input" id="set-travel-min-chance" placeholder="Min arrival chance %" value="${escapeHtml(s.travel_min_arrival_chance || '45')}">
+          </div>
+          <input class="tb-input" id="set-travel-items" placeholder="Items carried per trip" value="${escapeHtml(s.travel_items_per_trip || '29')}">
           <div class="tb-actions"><button class="tb-btn" id="tb-save-settings">Save Settings</button></div>
           <div class="tb-muted" id="tb-settings-msg"></div>
         </div>
@@ -548,8 +663,17 @@
           scan_interval_minutes: el('set-scan')?.value || '15',
           stock_pick_change_score_gap: el('set-gap')?.value || '15',
           enemy_tracking_window_hours: el('set-enemy')?.value || '72',
+          enemy_alerts_enabled: el('set-enemy-alerts')?.value || 'true',
           alerts_enabled: el('set-alerts')?.value || 'true',
           share_market_learning: el('set-share')?.value || 'true',
+          item_alerts_enabled: el('set-item-alerts')?.value || 'true',
+          item_default_buy_discount_pct: el('set-item-buy-discount')?.value || '3',
+          item_default_sell_markup_pct: el('set-item-sell-markup')?.value || '6',
+          points_alerts_enabled: el('set-points-alerts')?.value || 'true',
+          points_buy_zone: el('set-points-buy-zone')?.value || '',
+          points_sell_zone: el('set-points-sell-zone')?.value || '',
+          points_default_buy_discount_pct: el('set-points-buy-discount')?.value || '2',
+          points_default_sell_markup_pct: el('set-points-sell-markup')?.value || '4',
           auto_scan_enabled: el('set-auto')?.value || 'true'
         })
       });
@@ -568,6 +692,20 @@
   function fmtPct(n) {
     const v = Number(n || 0);
     return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  }
+
+  function shortTime(s) {
+    if (!s) return 'waiting';
+    return String(s).replace('T', ' ').replace('+00:00', '');
+  }
+  function signalClass(sig) {
+    const s = String(sig || '').toUpperCase();
+    if (['BUY','GO','PICK'].includes(s)) return 'tb-signal-buy';
+    if (['SELL','RISKY','WAIT'].includes(s)) return 'tb-signal-sell';
+    return 'tb-signal-hold';
+  }
+  function kpi(title, value, detail) {
+    return `<div class="tb-kpi"><small>${escapeHtml(title)}</small><strong>${escapeHtml(value || '—')}</strong><span>${escapeHtml(detail || '')}</span></div>`;
   }
 
   async function renderStockBrain() {
@@ -682,17 +820,464 @@
     }
   }
 
-  function renderAccuracy() {
+
+  async function renderItemMarket() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Item Market</h3><div class="tb-scan">Loading watched item signals...</div></div>`;
+    try {
+      const data = await api('/api/items/market');
+      const watch = data.watchlist || [];
+      const signals = data.signals || [];
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Item Market Scanner <span class="tb-pill tb-ai-pill">Step 3 Active</span></h3>
+          <div class="tb-muted">Add items to watch. The backend stores price snapshots, learns buy/sell zones over time, and alerts when a watched item hits your target zone.</div>
+          <input class="tb-input" id="tb-item-query" placeholder="Item name or item ID" autocomplete="off">
+          <div class="tb-grid">
+            <input class="tb-input" id="tb-item-buy" placeholder="Buy zone optional">
+            <input class="tb-input" id="tb-item-sell" placeholder="Sell zone optional">
+          </div>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-item-search">Find</button>
+            <button class="tb-btn" id="tb-item-add">Add Watch</button>
+            <button class="tb-btn" id="tb-item-scan">Scan Now</button>
+          </div>
+          <div class="tb-muted" id="tb-item-msg">Global item snapshots stored: ${escapeHtml(data.snapshot_count || 0)}</div>
+        </div>
+        <div class="tb-card" id="tb-item-results" style="display:none"></div>
+        <div class="tb-card">
+          <h3>Watched Items</h3>
+          ${watch.length ? watch.map(w => itemWatchRow(w)).join('') : `<div class="tb-muted">No watched items yet. Add one above, then press Scan Now.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Latest Buy/Sell Signals</h3>
+          ${signals.length ? signals.map(s => `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${escapeHtml(s.signal)} · ${escapeHtml(s.name)}</b><span>${fmtMoney(s.current_price)}</span></div>
+              <div class="tb-muted">${escapeHtml(s.created_at)} · Buy ${fmtMoney(s.buy_zone)} · Sell ${fmtMoney(s.sell_zone)}</div>
+              <div class="tb-muted">${escapeHtml(s.reason)}</div>
+              ${s.link ? `<a class="tb-link" href="${escapeHtml(s.link)}">Go Buy / Open Market</a>` : ''}
+            </div>`).join('') : `<div class="tb-muted">No signals yet. Alerts will appear when watched items hit buy or sell zones.</div>`}
+        </div>
+      `;
+      el('tb-item-search')?.addEventListener('click', searchItems);
+      el('tb-item-add')?.addEventListener('click', addItemWatch);
+      el('tb-item-scan')?.addEventListener('click', scanItemsNow);
+      body.querySelectorAll('[data-unwatch]').forEach(btn => btn.addEventListener('click', async () => {
+        await api('/api/items/unwatch', { method:'POST', body: JSON.stringify({ item_id: btn.dataset.unwatch }) });
+        renderItemMarket();
+      }));
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Item Market</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  function itemWatchRow(w) {
+    const latest = w.latest || {};
+    const stats = w.stats || {};
+    const sig = String(w.signal || 'WAITING');
+    const sigClass = sig === 'BUY' ? 'tb-signal-buy' : (sig === 'SELL' ? 'tb-signal-sell' : 'tb-signal-hold');
     return `
-      <div class="tb-card">
-        <h3>Accuracy</h3>
-        <div class="tb-muted">Coming in Step 7. This will compare predictions against actual 24h results and adjust future weights.</div>
-      </div>
-      <div class="tb-card">
-        <h3>Learning Rules Prepared</h3>
-        <div class="tb-muted">Stock Brain now stores global snapshots and prediction history. Later steps will add item, points, travel, and war accuracy.</div>
-      </div>
-    `;
+      <div class="tb-market-row">
+        <div class="tb-market-title">
+          <span><b>${escapeHtml(w.name)}</b> <span class="tb-muted">#${escapeHtml(w.item_id)}</span></span>
+          <span class="${sigClass}"><b>${escapeHtml(sig)}</b></span>
+        </div>
+        <div class="tb-grid" style="margin-top:6px">
+          <div><span class="tb-pill">Current</span><br><span class="tb-price">${latest.lowest_price ? fmtMoney(latest.lowest_price) : 'Waiting'}</span></div>
+          <div><span class="tb-pill">Buy Zone</span><br>${w.buy_zone ? fmtMoney(w.buy_zone) : 'Auto-learning'}</div>
+          <div><span class="tb-pill">Sell Zone</span><br>${w.sell_zone ? fmtMoney(w.sell_zone) : 'Auto-learning'}</div>
+          <div><span class="tb-pill">1Y Change</span><br>${fmtPct(Number(stats.year_change_pct || 0))}</div>
+        </div>
+        <div class="tb-muted">24h low/high: ${fmtMoney(stats.min24)} / ${fmtMoney(stats.max24)} · 7d low/high: ${fmtMoney(stats.min7)} / ${fmtMoney(stats.max7)} · Listings: ${escapeHtml(latest.listing_count || 0)}</div>
+        <div class="tb-actions">
+          <a class="tb-link" href="https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(w.name)}">Go Buy / Open Market</a>
+          <button class="tb-btn tb-danger" data-unwatch="${escapeHtml(w.item_id)}">Remove</button>
+        </div>
+      </div>`;
+  }
+
+  async function searchItems() {
+    const box = el('tb-item-results');
+    const msg = el('tb-item-msg');
+    const q = el('tb-item-query')?.value || '';
+    if (msg) msg.innerHTML = '<span class="tb-warn">Searching Torn item catalog...</span>';
+    try {
+      const data = await api('/api/items/catalog?q=' + encodeURIComponent(q));
+      const items = data.items || [];
+      box.style.display = 'block';
+      box.innerHTML = `<h3>Search Results</h3>${items.length ? items.map(i => `
+        <div class="tb-mini-row">
+          <span><b>${escapeHtml(i.name)}</b> <span class="tb-muted">#${escapeHtml(i.item_id)} · ${escapeHtml(i.item_type || '')}</span></span>
+          <button class="tb-btn" data-additem="${escapeHtml(i.item_id)}" data-addname="${escapeHtml(i.name)}">Watch</button>
+        </div>`).join('') : '<div class="tb-muted">No items found. Try item ID.</div>'}`;
+      box.querySelectorAll('[data-additem]').forEach(btn => btn.addEventListener('click', async () => {
+        await api('/api/items/watch', { method:'POST', body: JSON.stringify({ item_id: btn.dataset.additem, name: btn.dataset.addname }) });
+        renderItemMarket();
+      }));
+      if (msg) msg.innerHTML = '<span class="tb-ok">Search complete.</span>';
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function addItemWatch() {
+    const msg = el('tb-item-msg');
+    const q = el('tb-item-query')?.value || '';
+    if (!q.trim()) { if (msg) msg.innerHTML = '<span class="tb-err">Enter an item name or ID first.</span>'; return; }
+    if (msg) msg.innerHTML = '<span class="tb-warn">Adding watch item and scanning...</span>';
+    try {
+      await api('/api/items/watch', { method:'POST', body: JSON.stringify({ query: q, buy_zone: el('tb-item-buy')?.value || '', sell_zone: el('tb-item-sell')?.value || '' }) });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Item added. Backend watcher will keep scanning it.</span>';
+      renderItemMarket();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function scanItemsNow() {
+    const msg = el('tb-item-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Scanning watched item markets...</span>';
+    try {
+      const data = await api('/api/items/scan', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Scan complete. Items seen: ' + escapeHtml(data.items_seen || 0) + '. Signals: ' + escapeHtml((data.signals || []).length) + '.</span>';
+      renderItemMarket();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+
+  async function renderPointsWatcher() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Points Watcher</h3><div class="tb-scan">Loading points market intelligence...</div></div>`;
+    try {
+      const data = await api('/api/points/market');
+      const latest = data.latest || {};
+      const stats = data.stats || {};
+      const signals = data.signals || [];
+      const sig = String(data.signal || 'WAITING');
+      const sigClass = sig === 'BUY' ? 'tb-signal-buy' : (sig === 'SELL' ? 'tb-signal-sell' : 'tb-signal-hold');
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Points Market Watcher <span class="tb-pill tb-ai-pill">Step 4 Active</span></h3>
+          <div class="tb-muted">The backend watches points prices, stores snapshots, learns normal ranges, and alerts when points hit your buy or sell zone.</div>
+          <div class="tb-grid">
+            <div><span class="tb-pill">Signal</span><br><span class="${sigClass}"><b>${escapeHtml(sig)}</b></span></div>
+            <div><span class="tb-pill">Current</span><br><span class="tb-price">${latest.lowest_price ? fmtMoney(latest.lowest_price) : 'Waiting'}</span></div>
+            <div><span class="tb-pill">Buy Zone</span><br>${data.buy_zone ? fmtMoney(data.buy_zone) : 'Auto-learning'}</div>
+            <div><span class="tb-pill">Sell Zone</span><br>${data.sell_zone ? fmtMoney(data.sell_zone) : 'Auto-learning'}</div>
+            <div><span class="tb-pill">Listings</span><br>${escapeHtml(latest.listing_count || 0)}</div>
+            <div><span class="tb-pill">Snapshots</span><br>${escapeHtml(data.snapshot_count || 0)}</div>
+          </div>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-points-scan">Scan Now</button>
+            <a class="tb-link" href="https://www.torn.com/pmarket.php">Open Points Market</a>
+          </div>
+          <div class="tb-muted" id="tb-points-msg">Last snapshot: ${escapeHtml(latest.created_at || 'waiting for first scan')}</div>
+        </div>
+        <div class="tb-card">
+          <h3>Points Trend</h3>
+          <div class="tb-grid">
+            <div><span class="tb-pill">24h Low/High</span><br>${fmtMoney(stats.min24)} / ${fmtMoney(stats.max24)}</div>
+            <div><span class="tb-pill">7d Low/High</span><br>${fmtMoney(stats.min7)} / ${fmtMoney(stats.max7)}</div>
+            <div><span class="tb-pill">30d Low/High</span><br>${fmtMoney(stats.min30)} / ${fmtMoney(stats.max30)}</div>
+            <div><span class="tb-pill">1Y Change</span><br>${fmtPct(Number(stats.year_change_pct || 0))}</div>
+          </div>
+          <div class="tb-muted">With only a little data, the zones are rough. More backend scans make the buy/sell zone smarter.</div>
+        </div>
+        <div class="tb-card">
+          <h3>Latest Points Signals</h3>
+          ${signals.length ? signals.map(s => `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${escapeHtml(s.signal)} · Points</b><span>${fmtMoney(s.current_price)}</span></div>
+              <div class="tb-muted">${escapeHtml(s.created_at)} · Buy ${fmtMoney(s.buy_zone)} · Sell ${fmtMoney(s.sell_zone)}</div>
+              <div class="tb-muted">${escapeHtml(s.reason)}</div>
+              ${s.link ? `<a class="tb-link" href="${escapeHtml(s.link)}">Open Points Market</a>` : ''}
+            </div>`).join('') : `<div class="tb-muted">No points signals yet. Alerts will appear when points hit buy or sell zones.</div>`}
+        </div>
+      `;
+      el('tb-points-scan')?.addEventListener('click', scanPointsNow);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Points Watcher</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function scanPointsNow() {
+    const msg = el('tb-points-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Scanning points market...</span>';
+    try {
+      const data = await api('/api/points/scan', { method:'POST', body: '{}' });
+      const sig = data.signal ? (' Signal: ' + data.signal.signal) : '';
+      if (msg) msg.innerHTML = '<span class="tb-ok">Scan complete. Listings seen: ' + escapeHtml(data.points_seen || 0) + '.' + escapeHtml(sig) + '</span>';
+      renderPointsWatcher();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function renderTravelProfit() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Travel Profit</h3><div class="tb-scan">Loading travel profit intelligence...</div></div>`;
+    try {
+      const data = await api('/api/travel/profit');
+      const best = data.best || null;
+      const routes = data.routes || [];
+      const recs = data.recommendations || [];
+      const sig = best ? String(best.signal || 'WAIT') : 'WAITING';
+      const sigClass = sig === 'GO' ? 'tb-signal-buy' : (sig === 'RISKY' ? 'tb-signal-sell' : 'tb-signal-hold');
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Travel Profit Predictor <span class="tb-pill tb-ai-pill">Step 5 Active</span></h3>
+          <div class="tb-muted">The backend compares travel items against home market values, estimates profit, scores travel time, and gives a GO / RISKY / WAIT signal.</div>
+          ${best ? `
+            <div class="tb-grid">
+              <div><span class="tb-pill">Signal</span><br><span class="${sigClass}"><b>${escapeHtml(sig)}</b></span></div>
+              <div><span class="tb-pill">Best Country</span><br>${escapeHtml(best.country)}</div>
+              <div><span class="tb-pill">Item</span><br>${escapeHtml(best.item_name)}</div>
+              <div><span class="tb-pill">Est Profit</span><br><span class="tb-price">${fmtMoney(best.estimated_profit)}</span></div>
+              <div><span class="tb-pill">Arrival Chance</span><br>${escapeHtml(best.arrival_chance)}%</div>
+              <div><span class="tb-pill">Travel Time</span><br>${escapeHtml(best.minutes || '?')} min one way</div>
+            </div>
+            <div class="tb-muted" style="margin-top:8px;">${escapeHtml(best.reason || '')}</div>
+            <div class="tb-actions">
+              <button class="tb-btn" id="tb-travel-scan">Scan Now</button>
+              <a class="tb-link" href="${escapeHtml(best.link || 'https://www.torn.com/travelagency.php')}">Open Travel Agency</a>
+              ${best.market_link ? `<a class="tb-link" href="${escapeHtml(best.market_link)}">Check Home Market</a>` : ''}
+            </div>
+          ` : `
+            <div class="tb-muted">No travel data yet. Run a scan after your item catalog has loaded.</div>
+            <div class="tb-actions"><button class="tb-btn" id="tb-travel-scan">Scan Now</button></div>
+          `}
+          <div class="tb-muted" id="tb-travel-msg">Snapshots learned: ${escapeHtml(data.snapshot_count || 0)} · ${escapeHtml(data.server_time || '')}</div>
+        </div>
+        <div class="tb-card">
+          <h3>Top Travel Routes</h3>
+          ${routes.length ? routes.map(r => {
+            const cls = r.signal === 'GO' ? 'tb-signal-buy' : (r.signal === 'RISKY' ? 'tb-signal-sell' : 'tb-signal-hold');
+            return `
+              <div class="tb-market-row">
+                <div class="tb-market-title"><b>${escapeHtml(r.country)} · ${escapeHtml(r.item_name)}</b><span class="${cls}">${escapeHtml(r.signal)}</span></div>
+                <div class="tb-muted">Profit ${fmtMoney(r.estimated_profit)} · Arrival ${escapeHtml(r.arrival_chance)}% · Score ${escapeHtml(r.score)} · ${escapeHtml(r.minutes)}m one way</div>
+                <div class="tb-muted">Home ${fmtMoney(r.home_price)} · Abroad ${fmtMoney(r.abroad_cost)} · ${escapeHtml(r.reason || '')}</div>
+                <div class="tb-actions">
+                  <a class="tb-link" href="${escapeHtml(r.link || 'https://www.torn.com/travelagency.php')}">Travel</a>
+                  ${r.market_link ? `<a class="tb-link" href="${escapeHtml(r.market_link)}">Market</a>` : ''}
+                </div>
+              </div>`;
+          }).join('') : `<div class="tb-muted">No routes ranked yet. The backend will learn as item/market snapshots build.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Latest Travel Alerts</h3>
+          ${recs.length ? recs.map(r => `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${escapeHtml(r.signal)} · ${escapeHtml(r.country)}</b><span>${fmtMoney(r.estimated_profit)}</span></div>
+              <div class="tb-muted">${escapeHtml(r.created_at)} · ${escapeHtml(r.item_name)} · Arrival ${escapeHtml(r.arrival_chance)}%</div>
+              <div class="tb-muted">${escapeHtml(r.reason)}</div>
+              ${r.link ? `<a class="tb-link" href="${escapeHtml(r.link)}">Open Travel Agency</a>` : ''}
+            </div>`).join('') : `<div class="tb-muted">No GO alerts yet. Alerts appear when a route beats your profit/chance settings.</div>`}
+        </div>
+      `;
+      el('tb-travel-scan')?.addEventListener('click', scanTravelNow);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Travel Profit</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function scanTravelNow() {
+    const msg = el('tb-travel-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Scanning travel profit routes...</span>';
+    try {
+      const data = await api('/api/travel/scan', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Scan complete. Routes checked: ' + escapeHtml(data.routes_seen || 0) + '.</span>';
+      renderTravelProfit();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+
+
+  async function renderEnemySleep() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Enemy Sleep</h3><div class="tb-scan">Loading enemy activity brain...</div></div>`;
+    try {
+      const data = await api('/api/enemy/activity');
+      const sess = data.session || null;
+      const report = data.report || null;
+      const hourly = report?.hourly || [];
+      const latest = report?.latest || [];
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Enemy Sleep / Activity Tracker <span class="tb-pill tb-ai-pill">Step 6 Active</span></h3>
+          <div class="tb-muted">Faction-scoped war intel. This tracks your current ranked-war enemy only, learns about 72 hours of activity, and keeps the report private to this login/faction data.</div>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-enemy-start">Start Tracking Current War Enemy</button>
+            <button class="tb-btn" id="tb-enemy-scan">Scan Now</button>
+            <button class="tb-btn" id="tb-enemy-stop">Stop</button>
+          </div>
+          <div class="tb-muted" id="tb-enemy-msg">${sess ? 'Tracking ' + escapeHtml(sess.enemy_faction_name || 'enemy faction') : 'Not tracking yet. Press Start Tracking while you are in a ranked war.'}</div>
+        </div>
+        <div class="tb-card">
+          <h3>Current Report</h3>
+          ${report ? `
+            <div class="tb-grid">
+              <div><span class="tb-pill">Enemy</span><br>${escapeHtml(report.enemy_faction_name || 'Enemy')}</div>
+              <div><span class="tb-pill">Confidence</span><br><b>${escapeHtml(report.confidence || 'Low')}</b></div>
+              <div><span class="tb-pill">Samples</span><br>${escapeHtml(report.sample_count || 0)}</div>
+              <div><span class="tb-pill">Members Seen</span><br>${escapeHtml(report.member_count || 0)}</div>
+              <div><span class="tb-pill">Active Ratio</span><br>${escapeHtml(report.active_ratio || 0)}%</div>
+              <div><span class="tb-pill">Inactive Ratio</span><br>${escapeHtml(report.inactive_ratio || 0)}%</div>
+            </div>
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>Best Attack Window</b><span class="tb-signal-buy">${escapeHtml(report.best_attack_window || 'Learning')}</span></div>
+              <div class="tb-muted">Lowest enemy active window in the recorded 72h pattern.</div>
+            </div>
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>Best Turtle Window</b><span class="tb-signal-sell">${escapeHtml(report.best_turtle_window || 'Learning')}</span></div>
+              <div class="tb-muted">Highest enemy active window. Good time to defend, turtle, or avoid wasting energy.</div>
+            </div>
+            <div class="tb-muted">${escapeHtml(report.summary || '')}</div>
+          ` : `<div class="tb-muted">No report yet. Start tracking and the backend will save activity snapshots automatically.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Hourly Activity Pattern</h3>
+          ${hourly.length ? hourly.map(h => `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${String(h.hour).padStart(2,'0')}:00 Torn</b><span>${escapeHtml(h.active_pct)}% active</span></div>
+              <div class="tb-muted">Samples: ${escapeHtml(h.samples)}</div>
+            </div>`).join('') : `<div class="tb-muted">Hourly pattern appears after snapshots collect. Three days gives a much better result.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Latest Seen Enemy States</h3>
+          ${latest.length ? latest.map(r => `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${escapeHtml(r.enemy_name || 'Enemy')}</b><span>${escapeHtml(r.activity_bucket || '')}</span></div>
+              <div class="tb-muted">${escapeHtml(r.captured_at || '')} · ${escapeHtml(r.online_status || '')} · ${escapeHtml(r.status_description || '')}</div>
+            </div>`).join('') : `<div class="tb-muted">No latest enemy states yet.</div>`}
+        </div>
+      `;
+      el('tb-enemy-start')?.addEventListener('click', enemyStart);
+      el('tb-enemy-scan')?.addEventListener('click', enemyScan);
+      el('tb-enemy-stop')?.addEventListener('click', enemyStop);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Enemy Sleep</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function enemyStart() {
+    const msg = el('tb-enemy-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Finding current ranked war enemy and starting tracker...</span>';
+    try {
+      const data = await api('/api/enemy/start', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Tracking started. Members seen: ' + escapeHtml(data.members_seen || 0) + '.</span>';
+      renderEnemySleep();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function enemyScan() {
+    const msg = el('tb-enemy-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Scanning enemy activity...</span>';
+    try {
+      const data = await api('/api/enemy/scan', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Enemy scan complete. Members seen: ' + escapeHtml(data.members_seen || 0) + '.</span>';
+      renderEnemySleep();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function enemyStop() {
+    const msg = el('tb-enemy-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Stopping enemy tracker...</span>';
+    try {
+      await api('/api/enemy/stop', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">Enemy tracking stopped.</span>';
+      renderEnemySleep();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function runAccuracyNow() {
+    const msg = el('tb-accuracy-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Checking prediction results...</span>';
+    try {
+      const data = await api('/api/accuracy/run', { method:'POST', body:'{}' });
+      if (msg) msg.innerHTML = `<span class="tb-ok">Checked: stock ${data.stock || 0}, items ${data.item || 0}, points ${data.points || 0}, travel ${data.travel || 0}.</span>`;
+      renderAccuracy();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function renderAccuracy() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Accuracy</h3><div class="tb-scan">Loading learning brain...</div></div>`;
+    try {
+      const data = await api('/api/accuracy');
+      const summary = data.summary || [];
+      const weights = data.weights || [];
+      const recent = data.recent || [];
+      const adjustments = data.adjustments || [];
+      const summaryCards = summary.map(r => {
+        const total = Number(r.total || 0);
+        const correct = Number(r.correct || 0);
+        const rate = total ? ((correct / total) * 100) : 0;
+        return `
+          <div class="tb-card">
+            <h3>${escapeHtml(r.module)}</h3>
+            <div class="tb-grid">
+              <div><span class="tb-pill">Correct</span><br><span class="tb-score">${correct}/${total}</span></div>
+              <div><span class="tb-pill">Rate</span><br><span class="tb-score">${rate.toFixed(0)}%</span></div>
+              <div><span class="tb-pill">Avg Result</span><br><span class="tb-score">${fmtPct(Number(r.avg_pct || 0))}</span></div>
+            </div>
+          </div>
+        `;
+      }).join('') || `<div class="tb-card"><h3>No checked results yet</h3><div class="tb-muted">The app needs predictions or alerts to be at least 24h old before it can score them. Travel GO calls can be checked sooner once enough route snapshots exist.</div></div>`;
+      const weightCards = weights.map(w => `
+        <div class="tb-market-row">
+          <div class="tb-market-title"><b>${escapeHtml(w.module)} · ${escapeHtml(w.signal_key)}</b><span>${Number(w.weight_value || 1).toFixed(2)}x</span></div>
+          <div class="tb-muted">Updated ${escapeHtml(w.updated_at)}</div>
+        </div>
+      `).join('') || `<div class="tb-muted">No weight changes yet. After enough results, the app will raise what works and lower what fails.</div>`;
+      const recentRows = recent.map(r => `
+        <div class="tb-market-row">
+          <div class="tb-market-title"><b>${escapeHtml(r.module)} · ${escapeHtml(r.target_name)}</b><span class="${r.was_correct ? 'tb-ok' : 'tb-err'}">${r.was_correct ? 'RIGHT' : 'WRONG'}</span></div>
+          <div class="tb-muted">${escapeHtml(r.signal)} · predicted ${fmtMoney(r.predicted_value)} → actual ${fmtMoney(r.actual_value)} · ${fmtPct(Number(r.result_pct || 0))}</div>
+          <div class="tb-muted">${escapeHtml(r.notes || '')}</div>
+        </div>
+      `).join('') || `<div class="tb-muted">No scored events yet.</div>`;
+      const adjustRows = adjustments.map(a => `
+        <div class="tb-market-row">
+          <div class="tb-market-title"><b>${escapeHtml(a.module)} · ${escapeHtml(a.signal_key)}</b><span>${Number(a.old_weight || 1).toFixed(2)}x → ${Number(a.new_weight || 1).toFixed(2)}x</span></div>
+          <div class="tb-muted">${escapeHtml(a.reason)}</div>
+        </div>
+      `).join('') || `<div class="tb-muted">No learning adjustments yet.</div>`;
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Self-Learning Accuracy</h3>
+          <div class="tb-muted">This checks old predictions against saved backend results, then adjusts global learning weights so new users can benefit from your recorded data later.</div>
+          <div class="tb-actions"><button class="tb-btn" id="tb-accuracy-run">Check Learning Now</button></div>
+          <div id="tb-accuracy-msg" class="tb-muted">Last refresh: ${escapeHtml(data.server_time || '')}</div>
+        </div>
+        ${summaryCards}
+        <div class="tb-card"><h3>Global Brain Weights</h3>${weightCards}</div>
+        <div class="tb-card"><h3>Recent Scored Predictions</h3>${recentRows}</div>
+        <div class="tb-card"><h3>Recent Learning Adjustments</h3>${adjustRows}</div>
+      `;
+      el('tb-accuracy-run')?.addEventListener('click', runAccuracyNow);
+      el('tb-accuracy-run')?.addEventListener('touchend', (e) => { e.preventDefault(); runAccuracyNow(); }, { passive:false });
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Accuracy</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
   }
 
   function render() {
@@ -708,13 +1293,13 @@
       return;
     }
 
-    if (activeTab === 'Overview') body.innerHTML = renderOverview();
+    if (activeTab === 'Overview') { renderOverviewLive(); return; }
     else if (activeTab === 'Stock Brain') { renderStockBrain(); return; }
-    else if (activeTab === 'Item Market') body.innerHTML = comingSoon('Item Market Scanner', 'Step 3');
-    else if (activeTab === 'Points Watcher') body.innerHTML = comingSoon('Points Market Watcher', 'Step 4');
-    else if (activeTab === 'Travel Profit') body.innerHTML = comingSoon('Travel Profit Predictor', 'Step 5');
-    else if (activeTab === 'Enemy Sleep') body.innerHTML = comingSoon('Enemy Sleep / Activity Tracker', 'Step 6');
-    else if (activeTab === 'Accuracy') body.innerHTML = renderAccuracy();
+    else if (activeTab === 'Item Market') { renderItemMarket(); return; }
+    else if (activeTab === 'Points Watcher') { renderPointsWatcher(); return; }
+    else if (activeTab === 'Travel Profit') { renderTravelProfit(); return; }
+    else if (activeTab === 'Enemy Sleep') { renderEnemySleep(); return; }
+    else if (activeTab === 'Accuracy') { renderAccuracy(); return; }
     else body.innerHTML = renderOverview();
   }
 
@@ -737,6 +1322,7 @@
       try { await api('/api/auto/start', { method: 'POST', body: '{}' }); } catch (_) {}
       state = await api('/api/state');
       activeTab = 'Overview';
+      GM_setValue('fries91_torn_brain_tab_v1', activeTab);
       renderTabs();
       render();
       updateBadge();
@@ -745,17 +1331,24 @@
     }
   }
 
-  async function refreshState() {
-    if (!token()) { state = null; updateBadge(); render(); return; }
+  async function refreshState(silent = false) {
+    const now = Date.now();
+    if (refreshBusy) return;
+    if (silent && now - lastStateRefresh < 12000) return;
+    refreshBusy = true;
+    if (!token()) { state = null; updateBadge(); if (!silent) render(); refreshBusy = false; return; }
     try {
       state = await api('/api/state');
+      lastStateRefresh = now;
       updateBadge();
-      if (activeTab === 'Overview') render();
+      if (!silent && activeTab === 'Overview') render();
     } catch (e) {
       setToken('');
       state = null;
       updateBadge();
-      render();
+      if (!silent) render();
+    } finally {
+      refreshBusy = false;
     }
   }
 
@@ -769,12 +1362,12 @@
 
   function boot() {
     mount();
-    refreshState();
+    refreshState(true);
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
       if (!el('tb-icon')) { mounted = false; mount(); }
-      if (el('tb-panel')?.classList.contains('tb-show')) refreshState();
-    }, 30000);
+      if (el('tb-panel')?.classList.contains('tb-show')) refreshState(true);
+    }, 60000);
   }
 
   boot();
