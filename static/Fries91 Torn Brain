@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.0-step8-polish
-// @description  Self-learning Torn profit and war intel app shell. Step 8: polished PDA dashboard, smoother refresh, compact layout, and backend-first display.
+// @version      1.8.1-step8-fetchfix
+// @description  Self-learning Torn profit and war intel app. Step 8.1: PDA fetch fix using GM_xmlhttpRequest plus clearer backend connection errors.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_xmlhttpRequest
 // @connect      fries91-torn-profit-brain.onrender.com
 // @connect      localhost
 // @run-at       document-idle
@@ -348,14 +349,34 @@
   function token() { return GM_getValue(K_TOKEN, ''); }
   function setToken(v) { if (v) GM_setValue(K_TOKEN, v); else GM_deleteValue(K_TOKEN); }
 
-  async function api(path, options = {}) {
-    const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+  function api(path, options = {}) {
+    const method = options.method || 'GET';
+    const headers = Object.assign({ 'Content-Type': 'application/json', 'Accept': 'application/json' }, options.headers || {});
     if (token()) headers.Authorization = 'Bearer ' + token();
-    const res = await fetch(API_BASE + path, Object.assign({}, options, { headers }));
-    let data;
-    try { data = await res.json(); } catch (_) { data = { ok: false, error: 'Bad server response.' }; }
-    if (!res.ok || !data.ok) throw new Error(data.error || 'Request failed.');
-    return data;
+    const body = options.body || null;
+
+    // TornPDA can be picky with normal cross-site fetch(). GM_xmlhttpRequest is smoother for userscripts.
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method,
+        url: API_BASE + path,
+        headers,
+        data: body,
+        timeout: 45000,
+        onload: (res) => {
+          let data;
+          try { data = JSON.parse(res.responseText || '{}'); }
+          catch (_) { data = { ok: false, error: 'Bad server response from Render.' }; }
+          if (res.status < 200 || res.status >= 300 || !data.ok) {
+            reject(new Error((data && data.error) || ('Server returned HTTP ' + res.status)));
+            return;
+          }
+          resolve(data);
+        },
+        ontimeout: () => reject(new Error('Render timed out waking up. Wait 30 seconds and try again.')),
+        onerror: () => reject(new Error('Could not reach Render backend: ' + API_BASE.replace('https://', '') + '. Check Render deploy/logs.'))
+      });
+    });
   }
 
   function el(id) { return document.getElementById(id); }
@@ -373,7 +394,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.1 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -440,8 +461,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8 Includes</h3>
-        <div class="tb-muted">Animated AI🫰 badge, smoother PDA layout, backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
+        <h3>Step 8.1 Includes</h3>
+        <div class="tb-muted">PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
