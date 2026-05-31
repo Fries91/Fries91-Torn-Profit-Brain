@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.1.0-step1.5-theme
-// @description  Self-learning Torn profit and war intel app shell. Step 1.5: animated AI profit theme.
+// @version      1.2.1-step2-auto-stock-brain
+// @description  Self-learning Torn profit and war intel app shell. Step 2.1: backend auto scanner with Stock Brain analyzer.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
-// @connect      YOUR-RENDER-APP.onrender.com
+// @connect      fries91-torn-profit-brain.onrender.com
 // @connect      localhost
 // @run-at       document-idle
 // ==/UserScript==
@@ -18,7 +18,7 @@
   'use strict';
 
   // CHANGE THIS AFTER RENDER DEPLOYMENT:
-  const API_BASE = 'https://YOUR-RENDER-APP.onrender.com';
+  const API_BASE = 'https://fries91-torn-profit-brain.onrender.com';
 
   const K_TOKEN = 'fries91_torn_brain_token_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
@@ -301,6 +301,10 @@
       background: linear-gradient(90deg, transparent, rgba(34,197,94,.18), transparent);
       animation: tbShimmer 1.8s linear infinite;
     }
+    .tb-price { font-size: 18px; font-weight: 1000; color: #fef08a; }
+    .tb-score { font-size: 20px; font-weight: 1000; color: #86efac; text-shadow: 0 0 10px rgba(34,197,94,.35); }
+    .tb-mini-row { display:flex; justify-content:space-between; gap:8px; border-top:1px solid rgba(74,222,128,.12); padding:7px 0; font-size:12px; }
+    .tb-mini-row:first-child { border-top:0; }
     @media (min-width: 820px) { #tb-panel { left: auto; width: 760px; right: 18px; } }
     @media (max-width: 420px) {
       #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 15px; }
@@ -338,7 +342,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 1.5</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 2.1 Auto</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -405,9 +409,9 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 1.5 Includes</h3>
-        <div class="tb-muted">Animated AI🫰 badge, wicked self-learning theme, scan effects, neon profit cards, login, alerts, settings, and all future tabs prepared.</div>
-        <div class="tb-scan">Theme engine active · modules warming up</div>
+        <h3>Step 2.1 Includes</h3>
+        <div class="tb-muted">Animated AI🫰 badge, backend auto scanning after login, shared Stock Brain learning, 24h pick, drastic-change rules, alerts, settings, and all future tabs prepared.</div>
+        <div class="tb-scan">Stock Brain active · backend watcher online</div>
       </div>
     `;
   }
@@ -415,6 +419,7 @@
   function renderOverview() {
     if (!state) return renderLogin();
     const u = state.user || {};
+    const auto = state.auto_scan || {};
     return `
       <div class="tb-card">
         <h3>Overview</h3>
@@ -423,17 +428,20 @@
           <div><span class="tb-pill">Faction</span><br>${escapeHtml(u.faction_name || 'None')} ${u.faction_id ? '[' + escapeHtml(u.faction_id) + ']' : ''}</div>
           <div><span class="tb-pill">Alerts</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
           <div><span class="tb-pill">Server</span><br>${escapeHtml(state.server_time || 'online')}</div>
+          <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
+          <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(auto.last_scan_at || 'starting soon')}</div>
+          <div><span class="tb-pill">Next Scan</span><br>${escapeHtml(auto.next_scan_at || 'queued')}</div>
         </div>
       </div>
       <div class="tb-card">
         <h3>Best Move Right Now</h3>
-        <div class="tb-muted">Step 2 will add the first real analyzer: Stock Brain. After that we plug in Item Market, Points, Travel, and Enemy Sleep.</div>
-        <div class="tb-scan">AI learning engine online · waiting for market modules</div>
+        <div class="tb-muted">Stock Brain now runs mostly from the backend. After login, Render keeps watching and saving snapshots so TornPDA stays smooth.</div>
+        <div class="tb-scan">AI learning engine online · backend scanner feeding the global brain</div>
       </div>
       <div class="tb-card">
         <h3>Modules</h3>
         <div class="tb-muted">
-          Stock Brain: Step 2<br>
+          Stock Brain: Active<br>
           Item Market: Step 3<br>
           Points Watcher: Step 4<br>
           Travel Profit: Step 5<br>
@@ -498,10 +506,20 @@
           <input class="tb-input" id="set-gap" value="${escapeHtml(s.stock_pick_change_score_gap)}">
           <label class="tb-muted">Enemy tracking window hours</label>
           <input class="tb-input" id="set-enemy" value="${escapeHtml(s.enemy_tracking_window_hours)}">
+          <label class="tb-muted">Auto backend scanning</label>
+          <select class="tb-select" id="set-auto">
+            <option value="true" ${s.auto_scan_enabled === 'true' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.auto_scan_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
           <label class="tb-muted">Alerts enabled</label>
           <select class="tb-select" id="set-alerts">
             <option value="true" ${s.alerts_enabled === 'true' ? 'selected' : ''}>true</option>
             <option value="false" ${s.alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <label class="tb-muted">Share market learning data</label>
+          <select class="tb-select" id="set-share">
+            <option value="true" ${s.share_market_learning !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.share_market_learning === 'false' ? 'selected' : ''}>false</option>
           </select>
           <div class="tb-actions"><button class="tb-btn" id="tb-save-settings">Save Settings</button></div>
           <div class="tb-muted" id="tb-settings-msg"></div>
@@ -530,12 +548,137 @@
           scan_interval_minutes: el('set-scan')?.value || '15',
           stock_pick_change_score_gap: el('set-gap')?.value || '15',
           enemy_tracking_window_hours: el('set-enemy')?.value || '72',
-          alerts_enabled: el('set-alerts')?.value || 'true'
+          alerts_enabled: el('set-alerts')?.value || 'true',
+          share_market_learning: el('set-share')?.value || 'true',
+          auto_scan_enabled: el('set-auto')?.value || 'true'
         })
       });
       msg.innerHTML = '<span class="tb-ok">Saved.</span>';
     } catch (e) {
       msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+
+  function fmtMoney(n) {
+    const v = Number(n || 0);
+    if (!isFinite(v)) return '$0';
+    return '$' + Math.round(v).toLocaleString();
+  }
+  function fmtPct(n) {
+    const v = Number(n || 0);
+    return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  }
+
+  async function renderStockBrain() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Stock Brain</h3><div class="tb-scan">Loading shared stock intelligence...</div></div>`;
+    try {
+      const data = await api('/api/stocks/brain');
+      const p = data.pick;
+      const ranked = data.ranked || [];
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Stock Brain <span class="tb-pill tb-ai-pill">Global Learning</span></h3>
+          <div class="tb-muted">This uses shared stock snapshots. The backend auto scanner starts after login and keeps collecting data without making TornPDA do the heavy work.</div>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-auto-start">Start Auto Watcher</button>
+            <button class="tb-btn" id="tb-scan-stocks">Scan Now</button>
+            <button class="tb-btn" id="tb-stock-history">Prediction History</button>
+          </div>
+          <div class="tb-muted" id="tb-stock-msg">Snapshots stored: ${escapeHtml(data.snapshot_count || 0)}</div>
+        </div>
+        ${p ? `
+        <div class="tb-card">
+          <h3>Today's 24h Pick</h3>
+          <div class="tb-grid">
+            <div><span class="tb-pill">Stock</span><br><span class="tb-price">${escapeHtml(p.acronym)}</span><br><span class="tb-muted">${escapeHtml(p.name)}</span></div>
+            <div><span class="tb-pill">Pick Price</span><br><span class="tb-price">${fmtMoney(p.pick_price)}</span></div>
+            <div><span class="tb-pill">Score</span><br><span class="tb-score">${escapeHtml(p.score)}</span></div>
+            <div><span class="tb-pill">Confidence</span><br><span class="tb-score">${escapeHtml(p.confidence)}%</span></div>
+            <div><span class="tb-pill">Expected 24h</span><br><span class="tb-score">${fmtPct(Number(p.expected_24h_pct || 0))}</span></div>
+            <div><span class="tb-pill">Status</span><br>${escapeHtml(p.status)}</div>
+          </div>
+          <p class="tb-muted"><b>Reason:</b> ${escapeHtml(p.reason)}</p>
+          <div class="tb-muted">Created: ${escapeHtml(p.created_at)}</div>
+          <a class="tb-link" href="https://www.torn.com/page.php?sid=stocks">Open Torn Stocks</a>
+        </div>` : `
+        <div class="tb-card">
+          <h3>No Pick Yet</h3>
+          <div class="tb-muted">Press Scan Stocks Now. After the first scan, the app will choose one 24h stock pick. More scans make it smarter.</div>
+        </div>`}
+        <div class="tb-card">
+          <h3>Top Ranked Stocks</h3>
+          ${ranked.length ? ranked.map(r => `
+            <div class="tb-mini-row">
+              <span><b>${escapeHtml(r.acronym)}</b> <span class="tb-muted">${escapeHtml(r.name)}</span></span>
+              <span>${fmtMoney(r.current_price)} · score ${escapeHtml(r.score)} · ${escapeHtml(r.confidence)}%</span>
+            </div>`).join('') : `<div class="tb-muted">No ranked data yet. Run a scan first.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Drastic Change Rule</h3>
+          <div class="tb-muted">The pick only changes if a new stock beats the current one by your score gap setting, or the old pick becomes weak. That stops tiny market wiggles from constantly changing the call.</div>
+        </div>
+      `;
+      el('tb-auto-start')?.addEventListener('click', startAutoWatcher);
+      el('tb-scan-stocks')?.addEventListener('click', scanStocksNow);
+      el('tb-stock-history')?.addEventListener('click', renderStockHistory);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Stock Brain</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-actions"><button class="tb-btn" id="tb-scan-stocks">Try Scan</button></div></div>`;
+      el('tb-scan-stocks')?.addEventListener('click', scanStocksNow);
+    }
+  }
+
+  async function startAutoWatcher() {
+    const msg = el('tb-stock-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Starting backend watcher...</span>';
+    try {
+      await api('/api/auto/start', { method: 'POST', body: '{}' });
+      await refreshState();
+      if (msg) msg.innerHTML = '<span class="tb-ok">Backend watcher started. It will scan server-side.</span>';
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function scanStocksNow() {
+    const msg = el('tb-stock-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Scanning Torn stocks and updating the global brain...</span>';
+    try {
+      const data = await api('/api/stocks/scan', { method: 'POST', body: '{}' });
+      await refreshState();
+      const changed = data.changed ? ' Pick changed by drastic-change rule.' : '';
+      if (msg) msg.innerHTML = '<span class="tb-ok">Scan complete. Stocks seen: ' + escapeHtml(data.stocks_seen) + '.' + escapeHtml(changed) + '</span>';
+      renderStockBrain();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+      else el('tb-body').innerHTML = `<div class="tb-card"><h3>Stock Scan Failed</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function renderStockHistory() {
+    const body = el('tb-body');
+    body.innerHTML = `<div class="tb-card"><h3>Stock Prediction History</h3><div class="tb-scan">Loading predictions...</div></div>`;
+    try {
+      const data = await api('/api/stocks/predictions');
+      const rows = data.predictions || [];
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Stock Prediction History</h3>
+          <div class="tb-actions"><button class="tb-btn" id="tb-back-stock">Back to Stock Brain</button></div>
+        </div>
+        ${rows.length ? rows.map(p => `
+          <div class="tb-card">
+            <h3>${escapeHtml(p.acronym)} <span class="tb-pill">${escapeHtml(p.status)}</span></h3>
+            <div class="tb-muted">${escapeHtml(p.created_at)} · score ${escapeHtml(p.score)} · confidence ${escapeHtml(p.confidence)}%</div>
+            <div class="tb-muted">Pick price: ${fmtMoney(p.pick_price)} · Expected: ${fmtPct(Number(p.expected_24h_pct || 0))}</div>
+            <p class="tb-muted">${escapeHtml(p.reason)}</p>
+          </div>`).join('') : `<div class="tb-card"><h3>No predictions yet</h3><div class="tb-muted">Run your first stock scan.</div></div>`}
+      `;
+      el('tb-back-stock')?.addEventListener('click', renderStockBrain);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Prediction History</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
     }
   }
 
@@ -547,7 +690,7 @@
       </div>
       <div class="tb-card">
         <h3>Learning Rules Prepared</h3>
-        <div class="tb-muted">The backend is ready to store prediction history. Next steps will add the snapshot and prediction tables module by module.</div>
+        <div class="tb-muted">Stock Brain now stores global snapshots and prediction history. Later steps will add item, points, travel, and war accuracy.</div>
       </div>
     `;
   }
@@ -566,7 +709,7 @@
     }
 
     if (activeTab === 'Overview') body.innerHTML = renderOverview();
-    else if (activeTab === 'Stock Brain') body.innerHTML = comingSoon('Stock Brain', 'Step 2');
+    else if (activeTab === 'Stock Brain') { renderStockBrain(); return; }
     else if (activeTab === 'Item Market') body.innerHTML = comingSoon('Item Market Scanner', 'Step 3');
     else if (activeTab === 'Points Watcher') body.innerHTML = comingSoon('Points Market Watcher', 'Step 4');
     else if (activeTab === 'Travel Profit') body.innerHTML = comingSoon('Travel Profit Predictor', 'Step 5');
@@ -591,6 +734,7 @@
     try {
       const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ api_key: key }) });
       setToken(data.token);
+      try { await api('/api/auto/start', { method: 'POST', body: '{}' }); } catch (_) {}
       state = await api('/api/state');
       activeTab = 'Overview';
       renderTabs();
