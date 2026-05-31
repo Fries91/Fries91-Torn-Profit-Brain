@@ -1,0 +1,526 @@
+// ==UserScript==
+// @name         Fries91 Torn Brain - Step 1 Shell
+// @namespace    Fries91.TornBrain
+// @version      1.0.0-step1
+// @description  Self-learning Torn profit and war intel app shell. Step 1: login, tabs, alerts, settings.
+// @author       Fries91
+// @match        https://www.torn.com/*
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @connect      YOUR-RENDER-APP.onrender.com
+// @connect      localhost
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // CHANGE THIS AFTER RENDER DEPLOYMENT:
+  const API_BASE = 'https://YOUR-RENDER-APP.onrender.com';
+
+  const K_TOKEN = 'fries91_torn_brain_token_v1';
+  const K_OPEN = 'fries91_torn_brain_open_v1';
+  const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Alerts', 'Accuracy', 'Settings'];
+
+  let state = null;
+  let activeTab = 'Overview';
+  let mounted = false;
+  let refreshTimer = null;
+
+  GM_addStyle(`
+    #tb-icon {
+      position: fixed;
+      left: 12px;
+      bottom: 78px;
+      z-index: 2147483647;
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #121212, #2b210a);
+      border: 1px solid #d7a640;
+      color: #ffd76a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 900;
+      box-shadow: 0 8px 24px rgba(0,0,0,.55);
+      cursor: pointer;
+      user-select: none;
+      touch-action: manipulation;
+    }
+    #tb-icon .tb-badge {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: #b91c1c;
+      color: #fff;
+      font-size: 11px;
+      line-height: 18px;
+      text-align: center;
+      border: 1px solid #fff3;
+      display: none;
+    }
+    #tb-panel {
+      position: fixed;
+      left: 8px;
+      right: 8px;
+      top: 54px;
+      bottom: 16px;
+      z-index: 2147483646;
+      background: #0b0b0d;
+      color: #f8f3df;
+      border: 1px solid #a77a2f;
+      border-radius: 16px;
+      box-shadow: 0 18px 48px rgba(0,0,0,.72);
+      display: none;
+      overflow: hidden;
+      font-family: Arial, Helvetica, sans-serif;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    #tb-panel.tb-show { display: flex; flex-direction: column; }
+    .tb-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      background: linear-gradient(90deg, #14110b, #211704);
+      border-bottom: 1px solid #6f5120;
+    }
+    .tb-title {
+      font-size: 15px;
+      font-weight: 900;
+      color: #ffd76a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tb-close, .tb-btn {
+      border: 1px solid #8c692b;
+      background: #1a1510;
+      color: #ffe7a6;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-weight: 800;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .tb-close { min-width: 38px; }
+    .tb-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px;
+      border-bottom: 1px solid #2d2415;
+      background: #100f11;
+    }
+    .tb-tab {
+      flex: 0 0 auto;
+      border: 1px solid #3d321f;
+      background: #151515;
+      color: #d9cda8;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .tb-tab.active {
+      border-color: #d7a640;
+      background: #2a1d08;
+      color: #ffd76a;
+    }
+    .tb-body {
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      padding: 10px;
+      flex: 1;
+    }
+    .tb-card {
+      border: 1px solid #3b2e18;
+      background: #111113;
+      border-radius: 14px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .tb-card h3 {
+      margin: 0 0 8px;
+      color: #ffd76a;
+      font-size: 14px;
+    }
+    .tb-muted { color: #b7ad91; font-size: 12px; line-height: 1.35; }
+    .tb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tb-pill {
+      display: inline-block;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #211804;
+      border: 1px solid #6f5120;
+      color: #ffd76a;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .tb-input, .tb-select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #5b431b;
+      background: #080809;
+      color: #fff4d1;
+      border-radius: 10px;
+      padding: 10px;
+      margin: 6px 0;
+      outline: none;
+    }
+    .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .tb-danger { border-color: #7f1d1d; color: #fecaca; }
+    .tb-ok { color: #bbf7d0; }
+    .tb-warn { color: #fde68a; }
+    .tb-err { color: #fecaca; }
+    .tb-link {
+      color: #ffe08a;
+      text-decoration: underline;
+      font-weight: 800;
+    }
+    @media (min-width: 820px) {
+      #tb-panel { left: auto; width: 760px; right: 18px; }
+    }
+    @media (max-width: 420px) {
+      #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 14px; }
+      .tb-grid { grid-template-columns: 1fr; }
+      .tb-title { font-size: 14px; }
+    }
+  `);
+
+  function token() { return GM_getValue(K_TOKEN, ''); }
+  function setToken(v) { if (v) GM_setValue(K_TOKEN, v); else GM_deleteValue(K_TOKEN); }
+
+  async function api(path, options = {}) {
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+    if (token()) headers.Authorization = 'Bearer ' + token();
+    const res = await fetch(API_BASE + path, Object.assign({}, options, { headers }));
+    let data;
+    try { data = await res.json(); } catch (_) { data = { ok: false, error: 'Bad server response.' }; }
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Request failed.');
+    return data;
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  function mount() {
+    if (mounted || el('tb-icon')) return;
+    mounted = true;
+
+    const icon = document.createElement('div');
+    icon.id = 'tb-icon';
+    icon.innerHTML = '🧠<span class="tb-badge" id="tb-badge">0</span>';
+    document.body.appendChild(icon);
+
+    const panel = document.createElement('div');
+    panel.id = 'tb-panel';
+    panel.innerHTML = `
+      <div class="tb-head">
+        <div class="tb-title">🧠 Fries91 Torn Brain <span class="tb-pill">Step 1</span></div>
+        <button class="tb-close" id="tb-close">✕</button>
+      </div>
+      <div class="tb-tabs" id="tb-tabs"></div>
+      <div class="tb-body" id="tb-body"></div>
+    `;
+    document.body.appendChild(panel);
+
+    icon.addEventListener('click', togglePanel);
+    icon.addEventListener('touchend', function (e) { e.preventDefault(); togglePanel(); }, { passive: false });
+    el('tb-close').addEventListener('click', closePanel);
+    el('tb-close').addEventListener('touchend', function (e) { e.preventDefault(); closePanel(); }, { passive: false });
+
+    renderTabs();
+    render();
+
+    if (GM_getValue(K_OPEN, false)) openPanel();
+  }
+
+  function openPanel() {
+    el('tb-panel')?.classList.add('tb-show');
+    GM_setValue(K_OPEN, true);
+    refreshState();
+  }
+  function closePanel() {
+    el('tb-panel')?.classList.remove('tb-show');
+    GM_setValue(K_OPEN, false);
+  }
+  function togglePanel() {
+    if (el('tb-panel')?.classList.contains('tb-show')) closePanel(); else openPanel();
+  }
+
+  function renderTabs() {
+    const tabs = el('tb-tabs');
+    if (!tabs) return;
+    tabs.innerHTML = TABS.map(t => `<button class="tb-tab ${t === activeTab ? 'active' : ''}" data-tab="${t}">${t}</button>`).join('');
+    tabs.querySelectorAll('.tb-tab').forEach(btn => {
+      btn.addEventListener('click', () => { activeTab = btn.dataset.tab; renderTabs(); render(); });
+      btn.addEventListener('touchend', (e) => { e.preventDefault(); activeTab = btn.dataset.tab; renderTabs(); render(); }, { passive: false });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>'"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
+  }
+
+  function comingSoon(name, step) {
+    return `
+      <div class="tb-card">
+        <h3>${escapeHtml(name)}</h3>
+        <div class="tb-muted">Coming in ${escapeHtml(step)}. The tab is wired now so we can add this feature cleanly without rebuilding the whole app.</div>
+      </div>
+    `;
+  }
+
+  function renderLogin() {
+    return `
+      <div class="tb-card">
+        <h3>Login</h3>
+        <div class="tb-muted">Enter your Torn API key. This app only reads Torn data. It does not auto-buy, auto-sell, auto-attack, or change your Torn account.</div>
+        <input class="tb-input" id="tb-api-key" type="password" placeholder="Paste Torn API key" autocomplete="off" />
+        <div class="tb-actions">
+          <button class="tb-btn" id="tb-login">Connect</button>
+        </div>
+        <div class="tb-muted" id="tb-login-msg"></div>
+      </div>
+      <div class="tb-card">
+        <h3>Step 1 Includes</h3>
+        <div class="tb-muted">Backend shell, SQLite, login, masked key, state endpoint, settings, alerts, and all future tabs prepared.</div>
+      </div>
+    `;
+  }
+
+  function renderOverview() {
+    if (!state) return renderLogin();
+    const u = state.user || {};
+    return `
+      <div class="tb-card">
+        <h3>Overview</h3>
+        <div class="tb-grid">
+          <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
+          <div><span class="tb-pill">Faction</span><br>${escapeHtml(u.faction_name || 'None')} ${u.faction_id ? '[' + escapeHtml(u.faction_id) + ']' : ''}</div>
+          <div><span class="tb-pill">Alerts</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
+          <div><span class="tb-pill">Server</span><br>${escapeHtml(state.server_time || 'online')}</div>
+        </div>
+      </div>
+      <div class="tb-card">
+        <h3>Best Move Right Now</h3>
+        <div class="tb-muted">Step 2 will add the first real analyzer: Stock Brain. After that we plug in Item Market, Points, Travel, and Enemy Sleep.</div>
+      </div>
+      <div class="tb-card">
+        <h3>Modules</h3>
+        <div class="tb-muted">
+          Stock Brain: Step 2<br>
+          Item Market: Step 3<br>
+          Points Watcher: Step 4<br>
+          Travel Profit: Step 5<br>
+          Enemy Sleep: Step 6<br>
+          Accuracy Learning: Step 7
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderAlerts() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Alerts</h3><div class="tb-muted">Loading alerts...</div></div>`;
+    try {
+      const data = await api('/api/alerts');
+      const cards = (data.alerts || []).map(a => `
+        <div class="tb-card">
+          <h3>${escapeHtml(a.title)} ${a.is_read ? '' : '<span class="tb-pill">new</span>'}</h3>
+          <div class="tb-muted">${escapeHtml(a.created_at)} · ${escapeHtml(a.alert_type)}</div>
+          <p>${escapeHtml(a.body)}</p>
+          ${a.link ? `<a class="tb-link" href="${escapeHtml(a.link)}">Open Link</a>` : ''}
+        </div>
+      `).join('') || `<div class="tb-card"><h3>No alerts yet</h3><div class="tb-muted">Future buy zones, stock changes, points moves, travel chances, and enemy windows will show here.</div></div>`;
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Alerts</h3>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-mark-read">Mark all read</button>
+            <button class="tb-btn" id="tb-test-alert">Test alert</button>
+          </div>
+        </div>
+        ${cards}
+      `;
+      el('tb-mark-read')?.addEventListener('click', async () => { await api('/api/alerts/read', { method: 'POST', body: '{}' }); await refreshState(); render(); });
+      el('tb-test-alert')?.addEventListener('click', async () => { await api('/api/dev/test-alert', { method: 'POST', body: '{}' }); await refreshState(); render(); });
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Alerts</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function renderSettings() {
+    const body = el('tb-body');
+    if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
+    body.innerHTML = `<div class="tb-card"><h3>Settings</h3><div class="tb-muted">Loading settings...</div></div>`;
+    try {
+      const data = await api('/api/settings');
+      const s = data.settings || {};
+      const u = data.user || {};
+      body.innerHTML = `
+        <div class="tb-card">
+          <h3>Account</h3>
+          <div class="tb-muted">Logged in as ${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
+          <div class="tb-muted">API key: ${escapeHtml(u.masked_key || 'saved')}</div>
+          <div class="tb-actions"><button class="tb-btn tb-danger" id="tb-logout">Logout</button></div>
+        </div>
+        <div class="tb-card">
+          <h3>Scan Settings</h3>
+          <label class="tb-muted">Scan interval minutes</label>
+          <input class="tb-input" id="set-scan" value="${escapeHtml(s.scan_interval_minutes)}">
+          <label class="tb-muted">Stock pick change score gap</label>
+          <input class="tb-input" id="set-gap" value="${escapeHtml(s.stock_pick_change_score_gap)}">
+          <label class="tb-muted">Enemy tracking window hours</label>
+          <input class="tb-input" id="set-enemy" value="${escapeHtml(s.enemy_tracking_window_hours)}">
+          <label class="tb-muted">Alerts enabled</label>
+          <select class="tb-select" id="set-alerts">
+            <option value="true" ${s.alerts_enabled === 'true' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.alerts_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <div class="tb-actions"><button class="tb-btn" id="tb-save-settings">Save Settings</button></div>
+          <div class="tb-muted" id="tb-settings-msg"></div>
+        </div>
+        <div class="tb-card">
+          <h3>API Use & Torn Compliance</h3>
+          <div class="tb-muted">
+            This app only uses Torn's read-only API. It stores your key on your own Render app so it can read data for analysis. It does not request your Torn password, does not auto-buy/sell, and does not perform in-game actions.
+          </div>
+        </div>
+      `;
+      el('tb-logout')?.addEventListener('click', async () => { try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) {} setToken(''); state = null; renderTabs(); render(); });
+      el('tb-save-settings')?.addEventListener('click', saveSettings);
+    } catch (e) {
+      body.innerHTML = `<div class="tb-card"><h3>Settings</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+    }
+  }
+
+  async function saveSettings() {
+    const msg = el('tb-settings-msg');
+    msg.textContent = 'Saving...';
+    try {
+      await api('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          scan_interval_minutes: el('set-scan')?.value || '15',
+          stock_pick_change_score_gap: el('set-gap')?.value || '15',
+          enemy_tracking_window_hours: el('set-enemy')?.value || '72',
+          alerts_enabled: el('set-alerts')?.value || 'true'
+        })
+      });
+      msg.innerHTML = '<span class="tb-ok">Saved.</span>';
+    } catch (e) {
+      msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  function renderAccuracy() {
+    return `
+      <div class="tb-card">
+        <h3>Accuracy</h3>
+        <div class="tb-muted">Coming in Step 7. This will compare predictions against actual 24h results and adjust future weights.</div>
+      </div>
+      <div class="tb-card">
+        <h3>Learning Rules Prepared</h3>
+        <div class="tb-muted">The backend is ready to store prediction history. Next steps will add the snapshot and prediction tables module by module.</div>
+      </div>
+    `;
+  }
+
+  function render() {
+    const body = el('tb-body');
+    if (!body) return;
+
+    if (activeTab === 'Alerts') { renderAlerts(); return; }
+    if (activeTab === 'Settings') { renderSettings(); return; }
+
+    if (!token()) {
+      body.innerHTML = renderLogin();
+      bindLogin();
+      return;
+    }
+
+    if (activeTab === 'Overview') body.innerHTML = renderOverview();
+    else if (activeTab === 'Stock Brain') body.innerHTML = comingSoon('Stock Brain', 'Step 2');
+    else if (activeTab === 'Item Market') body.innerHTML = comingSoon('Item Market Scanner', 'Step 3');
+    else if (activeTab === 'Points Watcher') body.innerHTML = comingSoon('Points Market Watcher', 'Step 4');
+    else if (activeTab === 'Travel Profit') body.innerHTML = comingSoon('Travel Profit Predictor', 'Step 5');
+    else if (activeTab === 'Enemy Sleep') body.innerHTML = comingSoon('Enemy Sleep / Activity Tracker', 'Step 6');
+    else if (activeTab === 'Accuracy') body.innerHTML = renderAccuracy();
+    else body.innerHTML = renderOverview();
+  }
+
+  function bindLogin() {
+    const btn = el('tb-login');
+    if (!btn) return;
+    btn.addEventListener('click', doLogin);
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); doLogin(); }, { passive: false });
+  }
+
+  async function doLogin() {
+    const msg = el('tb-login-msg');
+    const input = el('tb-api-key');
+    const key = input?.value?.trim() || '';
+    if (!key) { msg.innerHTML = '<span class="tb-err">Paste your API key first.</span>'; return; }
+    msg.textContent = 'Connecting...';
+    try {
+      const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ api_key: key }) });
+      setToken(data.token);
+      state = await api('/api/state');
+      activeTab = 'Overview';
+      renderTabs();
+      render();
+      updateBadge();
+    } catch (e) {
+      msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  async function refreshState() {
+    if (!token()) { state = null; updateBadge(); render(); return; }
+    try {
+      state = await api('/api/state');
+      updateBadge();
+      if (activeTab === 'Overview') render();
+    } catch (e) {
+      setToken('');
+      state = null;
+      updateBadge();
+      render();
+    }
+  }
+
+  function updateBadge() {
+    const b = el('tb-badge');
+    if (!b) return;
+    const n = state?.unread_alerts || 0;
+    b.textContent = n > 99 ? '99+' : String(n);
+    b.style.display = n > 0 ? 'block' : 'none';
+  }
+
+  function boot() {
+    mount();
+    refreshState();
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => {
+      if (!el('tb-icon')) { mounted = false; mount(); }
+      if (el('tb-panel')?.classList.contains('tb-show')) refreshState();
+    }, 30000);
+  }
+
+  boot();
+})();
