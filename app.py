@@ -2838,7 +2838,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.4-postgres",
+        "step": "8.10-floaticon",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2847,7 +2847,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.9-quiet-dockicon", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.10-floaticon", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -2957,7 +2957,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8.8-notify-itemfix",
+        "step": "8.10-floaticon",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
@@ -3026,7 +3026,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8.8-notify-itemfix",
+        "step": "8.10-floaticon",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
