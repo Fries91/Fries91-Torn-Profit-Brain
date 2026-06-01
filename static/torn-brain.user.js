@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.7-dbfix
-// @description  Self-learning Torn profit and war intel app. Step 8.7: PostgreSQL login fix, draggable AI badge, persistent session, swipe-safe tabs, and Notifications controls.
+// @version      1.8.9-quiet-dockicon
+// @description  Self-learning Torn profit and war intel app. Step 8.9: quiet Notifications tab count only, AI icon docked beside coin, item fallback, PostgreSQL, and PDA fixes.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -12,8 +12,6 @@
 // @grant        GM_xmlhttpRequest
 // @connect      fries91-torn-profit-brain.onrender.com
 // @connect      localhost
-// @downloadURL  https://fries91-torn-profit-brain.onrender.com/static/torn-brain.user.js
-// @updateURL    https://fries91-torn-profit-brain.onrender.com/static/torn-brain.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -27,8 +25,7 @@
   const K_TOKEN_BACKUP = 'fries91_torn_brain_token_backup_v1';
   const K_APIKEY = 'fries91_torn_brain_api_key_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
-  const K_ICON_POS = 'fries91_torn_brain_icon_pos_v1';
-  const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Notifications', 'Accuracy', 'Settings'];
+    const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Notifications', 'Accuracy', 'Settings'];
 
   let state = null;
   let dashboard = null;
@@ -68,56 +65,42 @@
     }
     #tb-icon {
       position: fixed;
-      left: 12px;
-      bottom: 78px;
+      left: 78px;
+      bottom: 72px;
       z-index: 2147483647;
-      min-width: 58px;
-      height: 42px;
-      padding: 0 8px;
-      border-radius: 15px;
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
       background:
-        radial-gradient(circle at 20% 20%, rgba(34,197,94,.35), transparent 34%),
+        radial-gradient(circle at 22% 20%, rgba(34,197,94,.36), transparent 34%),
         linear-gradient(135deg, #07110b, #111827 45%, #2a1d08);
-      border: 1px solid rgba(250,204,21,.88);
+      border: 1px solid rgba(250,204,21,.82);
       color: #dcfce7;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
+      font-size: 17px;
       font-weight: 1000;
-      letter-spacing: .4px;
+      line-height: 1;
+      letter-spacing: 0;
       text-shadow: 0 0 8px rgba(34,197,94,.95), 0 0 10px rgba(250,204,21,.55);
-      box-shadow: 0 8px 24px rgba(0,0,0,.70);
+      box-shadow: 0 6px 18px rgba(0,0,0,.70), 0 0 16px rgba(34,197,94,.34);
       cursor: pointer;
       user-select: none;
-      touch-action: none;
-      animation: tbPulseGlow 2.4s ease-in-out infinite;
-      overflow: visible;
+      touch-action: manipulation;
+      overflow: hidden;
     }
     #tb-icon:before {
       content: '';
       position: absolute;
       inset: 5px;
-      border-radius: 12px;
-      border: 1px solid rgba(34,197,94,.22);
+      border-radius: 9px;
+      border: 1px solid rgba(34,197,94,.20);
       pointer-events: none;
     }
-    #tb-icon .tb-badge {
-      position: absolute;
-      top: -7px;
-      right: -7px;
-      min-width: 18px;
-      height: 18px;
-      padding: 0 4px;
-      border-radius: 999px;
-      background: #dc2626;
-      color: #fff;
-      font-size: 11px;
-      line-height: 18px;
-      text-align: center;
-      border: 1px solid rgba(254,242,242,.7);
-      box-shadow: 0 0 12px rgba(239,68,68,.75);
-      display: none;
+    #tb-icon.tb-near-coin {
+      bottom: auto;
+      right: auto;
     }
     #tb-panel {
       position: fixed;
@@ -355,7 +338,7 @@
       #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 15px; }
       .tb-grid { grid-template-columns: 1fr; }
       .tb-title { font-size: 14px; }
-      #tb-icon { bottom: 72px; min-width: 56px; height: 40px; font-size: 15px; }
+      #tb-icon { bottom: 72px; left: 78px; width: 38px; height: 38px; font-size: 16px; }
     }
   `);
 
@@ -432,10 +415,7 @@
         onload: (res) => {
           let data;
           try { data = JSON.parse(res.responseText || '{}'); }
-          catch (_) {
-            const sample = String(res.responseText || '').replace(/\s+/g, ' ').slice(0, 160);
-            data = { ok: false, error: 'Bad server response from Render. HTTP ' + res.status + (sample ? ': ' + sample : '') };
-          }
+          catch (_) { data = { ok: false, error: 'Bad server response from Render.' }; }
           if (res.status < 200 || res.status >= 300 || !data.ok) {
             const err = new Error((data && data.error) || ('Server returned HTTP ' + res.status));
             err.status = res.status;
@@ -453,67 +433,60 @@
 
   function el(id) { return document.getElementById(id); }
 
-  function loadIconPosition(icon) {
-    let pos = null;
-    try { pos = JSON.parse(GM_getValue(K_ICON_POS, '') || 'null'); } catch (_) {}
-    if (!pos) {
-      try { pos = JSON.parse(window.localStorage.getItem(K_ICON_POS) || 'null'); } catch (_) {}
+  function isVisibleBox(r) {
+    return r && r.width >= 22 && r.height >= 22 && r.width <= 90 && r.height <= 90 && r.bottom > window.innerHeight - 170 && r.top < window.innerHeight - 20;
+  }
+
+  function findCoinLikeElement() {
+    const nodes = Array.from(document.querySelectorAll('a, button, div, span'));
+    let best = null;
+    for (const n of nodes) {
+      if (!n || n.id === 'tb-icon' || n.closest('#tb-panel')) continue;
+      const txt = ((n.textContent || '') + ' ' + (n.title || '') + ' ' + (n.className || '') + ' ' + (n.id || '')).toLowerCase();
+      const looksCoin = txt.includes('coin') || txt.includes('bank') || txt.includes('jackpot') || txt.includes('giveaway') || txt.includes('$') || txt.includes('💰') || txt.includes('🪙');
+      if (!looksCoin) continue;
+      const r = n.getBoundingClientRect();
+      if (!isVisibleBox(r)) continue;
+      if (!best || r.left < best.getBoundingClientRect().left) best = n;
     }
-    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
-      const maxLeft = Math.max(4, window.innerWidth - 70);
-      const maxTop = Math.max(4, window.innerHeight - 50);
-      icon.style.left = Math.min(Math.max(4, pos.left), maxLeft) + 'px';
-      icon.style.top = Math.min(Math.max(4, pos.top), maxTop) + 'px';
+    return best;
+  }
+
+  function positionIconBesideCoin() {
+    const icon = el('tb-icon');
+    if (!icon) return;
+    const coin = findCoinLikeElement();
+    if (coin) {
+      const r = coin.getBoundingClientRect();
+      const left = Math.min(Math.max(4, r.right + 6), window.innerWidth - 44);
+      const top = Math.min(Math.max(4, r.top + Math.max(0, (r.height - 38) / 2)), window.innerHeight - 44);
+      icon.style.left = Math.round(left) + 'px';
+      icon.style.top = Math.round(top) + 'px';
       icon.style.bottom = 'auto';
-      icon.style.right = 'auto';
+      icon.classList.add('tb-near-coin');
+      return;
     }
+    // Fallback: same bottom area as the banker coin row, but no red badge or floating text.
+    icon.style.left = '78px';
+    icon.style.top = 'auto';
+    icon.style.bottom = '72px';
+    icon.classList.remove('tb-near-coin');
   }
 
-  function saveIconPosition(left, top) {
-    const pos = { left: Math.round(left), top: Math.round(top) };
-    try { GM_setValue(K_ICON_POS, JSON.stringify(pos)); } catch (_) {}
-    try { window.localStorage.setItem(K_ICON_POS, JSON.stringify(pos)); } catch (_) {}
-  }
-
-  function setupDraggableIcon(icon) {
-    loadIconPosition(icon);
-    let startX = 0, startY = 0, startLeft = 0, startTop = 0, moved = false, dragging = false;
-    const begin = (x, y, e) => {
-      const r = icon.getBoundingClientRect();
-      startX = x; startY = y; startLeft = r.left; startTop = r.top;
-      moved = false; dragging = true;
-      icon.style.bottom = 'auto'; icon.style.right = 'auto';
+  function setupDockedIcon(icon) {
+    let lastTouch = 0;
+    const open = (e) => {
       if (e) { e.preventDefault(); e.stopPropagation(); }
+      togglePanel();
     };
-    const move = (x, y, e) => {
-      if (!dragging) return;
-      const dx = x - startX, dy = y - startY;
-      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) moved = true;
-      if (!moved) return;
-      const maxLeft = Math.max(4, window.innerWidth - icon.offsetWidth - 4);
-      const maxTop = Math.max(4, window.innerHeight - icon.offsetHeight - 4);
-      const left = Math.min(Math.max(4, startLeft + dx), maxLeft);
-      const top = Math.min(Math.max(4, startTop + dy), maxTop);
-      icon.style.left = left + 'px';
-      icon.style.top = top + 'px';
-      if (e) { e.preventDefault(); e.stopPropagation(); }
-    };
-    const end = (e) => {
-      if (!dragging) return;
-      dragging = false;
-      const r = icon.getBoundingClientRect();
-      saveIconPosition(r.left, r.top);
-      if (e) { e.preventDefault(); e.stopPropagation(); }
-      if (!moved) togglePanel();
-      setTimeout(() => { moved = false; }, 0);
-    };
-    icon.addEventListener('touchstart', e => { const t = e.touches && e.touches[0]; if (t) begin(t.clientX, t.clientY, e); }, { passive:false });
-    icon.addEventListener('touchmove', e => { const t = e.touches && e.touches[0]; if (t) move(t.clientX, t.clientY, e); }, { passive:false });
-    icon.addEventListener('touchend', end, { passive:false });
-    icon.addEventListener('mousedown', e => begin(e.clientX, e.clientY, e));
-    document.addEventListener('mousemove', e => move(e.clientX, e.clientY, e));
-    document.addEventListener('mouseup', end);
-    icon.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); });
+    icon.addEventListener('touchend', e => { lastTouch = Date.now(); open(e); }, { passive:false });
+    icon.addEventListener('click', e => {
+      if (Date.now() - lastTouch < 600) { e.preventDefault(); e.stopPropagation(); return; }
+      open(e);
+    });
+    positionIconBesideCoin();
+    setTimeout(positionIconBesideCoin, 900);
+    setTimeout(positionIconBesideCoin, 2500);
   }
 
   function mount() {
@@ -522,14 +495,14 @@
 
     const icon = document.createElement('div');
     icon.id = 'tb-icon';
-    icon.innerHTML = 'AI🫰<span class="tb-badge" id="tb-badge">0</span>';
+    icon.innerHTML = 'AI🫰';
     document.body.appendChild(icon);
 
     const panel = document.createElement('div');
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.7 DB Fix</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.9 Quiet</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -537,7 +510,7 @@
     `;
     document.body.appendChild(panel);
 
-    setupDraggableIcon(icon);
+    setupDockedIcon(icon);
     el('tb-close').addEventListener('click', closePanel);
     el('tb-close').addEventListener('touchend', function (e) { e.preventDefault(); closePanel(); }, { passive: false });
 
@@ -626,8 +599,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.7 Includes</h3>
-        <div class="tb-muted">PostgreSQL login/database fix, movable AI🫰 badge, auto re-login, swipe-safe tabs, Notifications tab, PDA fetch fix, backend-first dashboard, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, and Accuracy Learning.</div>
+        <h3>Step 8.9 Includes</h3>
+        <div class="tb-muted">Quiet notification mode, Notifications tab count only, AI🫰 icon docked near the coin, item price fallback fix, auto re-login, swipe-safe tabs, PostgreSQL storage, backend-first dashboard, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
@@ -675,10 +648,9 @@
           </div>
         </div>
         <div class="tb-card">
-          <h3>Latest Notifications</h3>
-          <div class="tb-compact-list">
-            ${alerts.map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span>${a.link ? `<br><a class="tb-link" href="${escapeHtml(a.link)}">Open</a>` : ''}</div>`).join('') || '<div class="tb-muted">No notifications yet.</div>'}
-          </div>
+          <h3>Notifications</h3>
+          <div class="tb-muted">Quiet mode is on. Alerts stay inside the Notifications tab only. Open the overlay and use the Notifications tab number to see unread alerts.</div>
+          <div class="tb-scan">Unread notifications: ${escapeHtml(dashboard.unread_alerts || 0)}</div>
         </div>
         <div class="tb-card">
           <h3>Status</h3>
@@ -733,7 +705,7 @@
           <div class="tb-muted">${escapeHtml(a.created_at)} · ${escapeHtml(a.alert_type)}</div>
           <p>${escapeHtml(a.body)}</p>
           <div class="tb-actions">
-            ${a.link ? `<a class="tb-link" href="${escapeHtml(a.link)}">Open Link</a>` : ''}
+            ${a.link ? `<a class="tb-link tb-open-alert" data-id="${escapeHtml(a.id)}" href="${escapeHtml(a.link)}">Open + mark read</a>` : ''}
             ${a.is_read ? '' : `<button class="tb-btn tb-mark-one" data-id="${escapeHtml(a.id)}">Mark read</button>`}
           </div>
         </div>
@@ -741,7 +713,7 @@
       body.innerHTML = `
         <div class="tb-card">
           <h3>Notifications</h3>
-          <div class="tb-muted">Unread: ${escapeHtml(data.unread || state?.unread_alerts || 0)}. Marking read clears the red AI🫰 badge.</div>
+          <div class="tb-muted">Unread: ${escapeHtml(data.unread || state?.unread_alerts || 0)}. Quiet mode keeps alerts inside this tab only.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-mark-read">Mark all read</button>
             <button class="tb-btn" id="tb-refresh-notes">Refresh</button>
@@ -757,6 +729,16 @@
         await api('/api/alerts/read', { method: 'POST', body: JSON.stringify({ id: btn.dataset.id }) });
         await refreshState(true);
         await renderNotifications();
+      }));
+      document.querySelectorAll('.tb-open-alert').forEach(link => link.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const url = link.getAttribute('href');
+        const id = link.dataset.id;
+        try {
+          if (id) await api('/api/alerts/read', { method: 'POST', body: JSON.stringify({ id }) });
+          await refreshState(true);
+        } catch (_) {}
+        if (url) window.location.href = url;
       }));
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Notifications</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
@@ -1091,9 +1073,9 @@
           <div><span class="tb-pill">Current</span><br><span class="tb-price">${latest.lowest_price ? fmtMoney(latest.lowest_price) : 'Waiting'}</span></div>
           <div><span class="tb-pill">Buy Zone</span><br>${w.buy_zone ? fmtMoney(w.buy_zone) : 'Auto-learning'}</div>
           <div><span class="tb-pill">Sell Zone</span><br>${w.sell_zone ? fmtMoney(w.sell_zone) : 'Auto-learning'}</div>
-          <div><span class="tb-pill">1Y Change</span><br>${fmtPct(Number(stats.year_change_pct || 0))}</div>
+          <div><span class="tb-pill">1Y Change</span><br>${Number(stats.count365 || 0) > 1 ? fmtPct(Number(stats.year_change_pct || 0)) : 'Learning'}</div>
         </div>
-        <div class="tb-muted">24h low/high: ${fmtMoney(stats.min24)} / ${fmtMoney(stats.max24)} · 7d low/high: ${fmtMoney(stats.min7)} / ${fmtMoney(stats.max7)} · Listings: ${escapeHtml(latest.listing_count || 0)}</div>
+        <div class="tb-muted">24h low/high: ${fmtMoney(stats.min24)} / ${fmtMoney(stats.max24)} · 7d low/high: ${fmtMoney(stats.min7)} / ${fmtMoney(stats.max7)} · Listings: ${escapeHtml(latest.listing_count || 0)} · Source: ${escapeHtml(latest.source || 'market')}</div>
         <div class="tb-actions">
           <a class="tb-link" href="https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(w.name)}">Go Buy / Open Market</a>
           <button class="tb-btn tb-danger" data-unwatch="${escapeHtml(w.item_id)}">Remove</button>
@@ -1132,7 +1114,8 @@
     if (msg) msg.innerHTML = '<span class="tb-warn">Adding watch item and scanning...</span>';
     try {
       await api('/api/items/watch', { method:'POST', body: JSON.stringify({ query: q, buy_zone: el('tb-item-buy')?.value || '', sell_zone: el('tb-item-sell')?.value || '' }) });
-      if (msg) msg.innerHTML = '<span class="tb-ok">Item added. Backend watcher will keep scanning it.</span>';
+      try { await api('/api/items/scan', { method:'POST', body: '{}' }); } catch (_) {}
+      if (msg) msg.innerHTML = '<span class="tb-ok">Item added and scanned. If live listings are unavailable, catalog market value is used until live prices arrive.</span>';
       renderItemMarket();
     } catch (e) {
       if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
@@ -1579,11 +1562,9 @@
   }
 
   function updateBadge() {
-    const b = el('tb-badge');
-    if (!b) return;
-    const n = state?.unread_alerts || 0;
-    b.textContent = n > 99 ? '99+' : String(n);
-    b.style.display = n > 0 ? 'block' : 'none';
+    // Quiet notification mode: no red bubble on the AI icon.
+    // The unread number appears only on the Notifications tab while the overlay is open.
+    if (el('tb-panel')?.classList.contains('tb-show')) renderTabs();
   }
 
   function boot() {
@@ -1592,6 +1573,7 @@
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
       if (!el('tb-icon')) { mounted = false; mount(); }
+      positionIconBesideCoin();
       if (el('tb-panel')?.classList.contains('tb-show')) refreshState(true);
     }, 60000);
   }
