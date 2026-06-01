@@ -4,6 +4,12 @@ import json
 import time
 import hmac
 import sqlite3
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except Exception:
+    psycopg2 = None
+    RealDictCursor = None
 import secrets
 import hashlib
 import threading
@@ -15,7 +21,9 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 APP_SECRET = os.environ.get("APP_SECRET", "dev-change-me")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DATABASE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "torn_brain.sqlite3"))
+USE_POSTGRES = bool(DATABASE_URL)
 TORN_API_BASE = "https://api.torn.com"
 KEY_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 
@@ -27,17 +35,82 @@ def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _pg_sql(sql: str) -> str:
+    # Convert sqlite-style placeholders used by this app to psycopg2 placeholders.
+    # The app does not use literal question marks in SQL, so this is safe for our queries.
+    return sql.replace("?", "%s")
+
+
+class PgCursorWrap:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self.cursor)
+
+
+class PgConnWrap:
+    def __init__(self):
+        if psycopg2 is None:
+            raise RuntimeError("DATABASE_URL is set but psycopg2-binary is not installed")
+        self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        self._last_insert_id = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.conn.close()
+
+    def execute(self, sql, params=()):
+        sql_clean = sql.strip()
+        if sql_clean.upper().startswith("SELECT LAST_INSERT_ROWID()"):
+            class LastId:
+                def __init__(self, value): self.value = value
+                def fetchone(self): return {"id": self.value}
+                def fetchall(self): return [{"id": self.value}]
+            return LastId(self._last_insert_id)
+        cur = self.conn.cursor()
+        cur.execute(_pg_sql(sql), params or ())
+        if sql_clean.upper().startswith("INSERT"):
+            try:
+                cur2 = self.conn.cursor()
+                cur2.execute("SELECT LASTVAL() AS id")
+                row = cur2.fetchone()
+                self._last_insert_id = row["id"] if row else None
+            except Exception:
+                self._last_insert_id = None
+        return PgCursorWrap(cur)
+
+    def executescript(self, script):
+        cur = self.conn.cursor()
+        for part in script.split(";"):
+            stmt = part.strip()
+            if stmt:
+                cur.execute(stmt)
+
+
 def db():
+    if USE_POSTGRES:
+        return PgConnWrap()
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
-    os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
-    with db() as conn:
-        conn.executescript(
-            """
+def _sqlite_schema():
+    return r"""
+
             CREATE TABLE IF NOT EXISTS users (
                 torn_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -385,8 +458,372 @@ def init_db():
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            """
-        )
+            
+"""
+
+
+def _postgres_schema():
+    return r"""
+
+            CREATE TABLE IF NOT EXISTS users (
+                torn_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                level INTEGER,
+                faction_id INTEGER,
+                faction_name TEXT,
+                created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                torn_id INTEGER PRIMARY KEY,
+                api_key TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                masked_key TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                torn_id INTEGER NOT NULL,
+                setting_key TEXT NOT NULL,
+                setting_value TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(torn_id, setting_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS alerts (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                alert_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                link TEXT,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+
+            CREATE TABLE IF NOT EXISTS stock_snapshots (
+                id SERIAL PRIMARY KEY,
+                stock_id TEXT NOT NULL,
+                acronym TEXT NOT NULL,
+                name TEXT NOT NULL,
+                current_price REAL NOT NULL,
+                market_cap REAL,
+                total_shares REAL,
+                source TEXT NOT NULL DEFAULT 'torn',
+                captured_by_torn_id INTEGER,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_stock_snapshots_acronym_time
+                ON stock_snapshots(acronym, created_at);
+
+            CREATE TABLE IF NOT EXISTS stock_predictions (
+                id SERIAL PRIMARY KEY,
+                scope TEXT NOT NULL DEFAULT 'global',
+                chosen_by_torn_id INTEGER,
+                stock_id TEXT NOT NULL,
+                acronym TEXT NOT NULL,
+                name TEXT NOT NULL,
+                pick_price REAL NOT NULL,
+                score REAL NOT NULL,
+                confidence REAL NOT NULL,
+                expected_24h_pct REAL NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                replaced_by_id INTEGER,
+                created_at TEXT NOT NULL,
+                replaced_at TEXT,
+                result_checked_at TEXT,
+                actual_24h_price REAL,
+                actual_24h_pct REAL,
+                was_profitable INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_stock_predictions_active
+                ON stock_predictions(scope, status, created_at);
+
+            CREATE TABLE IF NOT EXISTS learning_weights (
+                scope TEXT NOT NULL,
+                module TEXT NOT NULL,
+                signal_key TEXT NOT NULL,
+                weight_value REAL NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(scope, module, signal_key)
+            );
+
+
+
+            CREATE TABLE IF NOT EXISTS item_catalog (
+                item_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                item_type TEXT,
+                buy_price REAL,
+                sell_value REAL,
+                market_value REAL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS item_watchlist (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                buy_zone REAL,
+                sell_zone REAL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(torn_id, item_id),
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS item_market_snapshots (
+                id SERIAL PRIMARY KEY,
+                item_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                lowest_price REAL,
+                avg_price REAL,
+                listing_count INTEGER NOT NULL DEFAULT 0,
+                total_quantity INTEGER NOT NULL DEFAULT 0,
+                captured_by_torn_id INTEGER,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_market_snapshots_item_time
+                ON item_market_snapshots(item_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS item_signals (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                current_price REAL,
+                buy_zone REAL,
+                sell_zone REAL,
+                reason TEXT NOT NULL,
+                link TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_signals_user_time
+                ON item_signals(torn_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS points_market_snapshots (
+                id SERIAL PRIMARY KEY,
+                lowest_price REAL,
+                avg_price REAL,
+                listing_count INTEGER NOT NULL DEFAULT 0,
+                total_quantity INTEGER NOT NULL DEFAULT 0,
+                captured_by_torn_id INTEGER,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_points_market_snapshots_time
+                ON points_market_snapshots(created_at);
+
+            CREATE TABLE IF NOT EXISTS points_signals (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                signal TEXT NOT NULL,
+                current_price REAL,
+                buy_zone REAL,
+                sell_zone REAL,
+                reason TEXT NOT NULL,
+                link TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_points_signals_user_time
+                ON points_signals(torn_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS travel_route_snapshots (
+                id SERIAL PRIMARY KEY,
+                country TEXT NOT NULL,
+                item_id INTEGER,
+                item_name TEXT NOT NULL,
+                abroad_cost REAL,
+                home_price REAL,
+                estimated_profit REAL,
+                profit_per_minute REAL,
+                arrival_chance REAL,
+                score REAL,
+                signal TEXT NOT NULL,
+                reason TEXT,
+                captured_by_torn_id INTEGER,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_travel_route_snapshots_time
+                ON travel_route_snapshots(country, item_name, created_at);
+
+            CREATE TABLE IF NOT EXISTS travel_recommendations (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                country TEXT NOT NULL,
+                item_id INTEGER,
+                item_name TEXT NOT NULL,
+                abroad_cost REAL,
+                home_price REAL,
+                estimated_profit REAL,
+                profit_per_minute REAL,
+                arrival_chance REAL,
+                score REAL,
+                signal TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                link TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_travel_recommendations_user_time
+                ON travel_recommendations(torn_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS enemy_tracking_sessions (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                faction_id INTEGER,
+                faction_name TEXT,
+                enemy_faction_id INTEGER,
+                enemy_faction_name TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                started_at TEXT NOT NULL,
+                last_scan_at TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(torn_id, faction_id, enemy_faction_id),
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS enemy_activity_snapshots (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                faction_id INTEGER,
+                enemy_faction_id INTEGER NOT NULL,
+                enemy_torn_id INTEGER NOT NULL,
+                enemy_name TEXT NOT NULL,
+                online_status TEXT,
+                status_state TEXT,
+                status_description TEXT,
+                status_until INTEGER,
+                last_action_status TEXT,
+                last_action_timestamp INTEGER,
+                activity_bucket TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_enemy_activity_scope_time
+                ON enemy_activity_snapshots(torn_id, enemy_faction_id, captured_at);
+
+            CREATE TABLE IF NOT EXISTS enemy_activity_reports (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                faction_id INTEGER,
+                enemy_faction_id INTEGER NOT NULL,
+                enemy_faction_name TEXT,
+                window_hours INTEGER NOT NULL DEFAULT 72,
+                best_attack_window TEXT,
+                best_turtle_window TEXT,
+                confidence TEXT NOT NULL,
+                active_ratio REAL,
+                inactive_ratio REAL,
+                member_count INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                report_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_enemy_reports_user_time
+                ON enemy_activity_reports(torn_id, enemy_faction_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS auto_scan_state (
+                torn_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_scan_at TEXT,
+                next_scan_at TEXT,
+                last_ok INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                scans_completed INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_runs (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                module TEXT NOT NULL,
+                status TEXT NOT NULL,
+                rows_seen INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+
+            CREATE TABLE IF NOT EXISTS accuracy_events (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER,
+                scope TEXT NOT NULL DEFAULT 'global',
+                module TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                target_name TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                predicted_value REAL,
+                actual_value REAL,
+                result_pct REAL,
+                score_before REAL,
+                confidence_before REAL,
+                was_correct INTEGER NOT NULL DEFAULT 0,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(source_table, source_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_accuracy_events_module_time
+                ON accuracy_events(module, created_at);
+
+            CREATE TABLE IF NOT EXISTS learning_adjustments (
+                id SERIAL PRIMARY KEY,
+                scope TEXT NOT NULL DEFAULT 'global',
+                module TEXT NOT NULL,
+                signal_key TEXT NOT NULL,
+                old_weight REAL,
+                new_weight REAL NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            
+"""
+
+
+def init_db():
+    if USE_POSTGRES:
+        with db() as conn:
+            conn.executescript(_postgres_schema())
+        return
+    os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
+    with db() as conn:
+        conn.executescript(_sqlite_schema())
 
 
 init_db()
@@ -2015,9 +2452,10 @@ def _record_accuracy_event(torn_id, scope, module, source_table, source_id, targ
         with db() as conn:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO accuracy_events(torn_id, scope, module, source_table, source_id, target_name, signal,
+                INSERT INTO accuracy_events(torn_id, scope, module, source_table, source_id, target_name, signal,
                     predicted_value, actual_value, result_pct, score_before, confidence_before, was_correct, notes, created_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(source_table, source_id) DO NOTHING
                 """,
                 (torn_id, scope or 'global', module, source_table, int(source_id), str(target_name)[:140], str(signal)[:40],
                  predicted_value, actual_value, result_pct, score_before, confidence_before, 1 if was_correct else 0, notes[:600], now_iso()),
@@ -2312,14 +2750,15 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.3-session-notifications",
-        "message": "Backend online. Auto scanner runs server-side after login. Step 8.3 adds auto re-login persistence, swipe-safe tabs, and Notifications mark-read controls."
+        "step": "8.4-postgres",
+        "database": "postgres" if USE_POSTGRES else "sqlite",
+        "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
     })
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso()})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.4-postgres", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
