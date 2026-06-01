@@ -42,6 +42,20 @@ app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    """Return JSON instead of an HTML 500 page so the userscript can show the real problem."""
+    try:
+        path = request.path or ""
+    except Exception:
+        path = ""
+    if path.startswith("/api/") or path in ("/health", "/"):
+        msg = str(exc) or exc.__class__.__name__
+        return jsonify({"ok": False, "error": "Server error: " + msg, "type": exc.__class__.__name__}), 500
+    raise exc
+
+
+
 def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -88,22 +102,40 @@ class PgConnWrap:
 
     def execute(self, sql, params=()):
         sql_clean = sql.strip()
-        if sql_clean.upper().startswith("SELECT LAST_INSERT_ROWID()"):
+        sql_upper = sql_clean.upper()
+
+        if sql_upper.startswith("SELECT LAST_INSERT_ROWID()"):
             class LastId:
-                def __init__(self, value): self.value = value
-                def fetchone(self): return {"id": self.value}
-                def fetchall(self): return [{"id": self.value}]
+                def __init__(self, value):
+                    self.value = value
+                def fetchone(self):
+                    return {"id": self.value}
+                def fetchall(self):
+                    return [{"id": self.value}]
             return LastId(self._last_insert_id)
+
         cur = self.conn.cursor()
-        cur.execute(_pg_sql(sql), params or ())
-        if sql_clean.upper().startswith("INSERT"):
+        converted = _pg_sql(sql)
+
+        # Important PostgreSQL fix:
+        # Old versions ran SELECT LASTVAL() after every INSERT. That crashes when the
+        # INSERT is into a non-SERIAL table like users/api_keys, and PostgreSQL then
+        # marks the whole transaction as aborted. Login then returned a 500 HTML page,
+        # which TornPDA showed as "Bad server response from Render."
+        # Only capture a generated id for the one place this app actually asks for it.
+        needs_id = sql_upper.startswith("INSERT INTO STOCK_PREDICTIONS")
+        if needs_id and " RETURNING " not in sql_upper:
+            converted = converted.rstrip().rstrip(";") + " RETURNING id"
+
+        cur.execute(converted, params or ())
+
+        if needs_id:
             try:
-                cur2 = self.conn.cursor()
-                cur2.execute("SELECT LASTVAL() AS id")
-                row = cur2.fetchone()
+                row = cur.fetchone()
                 self._last_insert_id = row["id"] if row else None
             except Exception:
                 self._last_insert_id = None
+
         return PgCursorWrap(cur)
 
     def executescript(self, script):
@@ -2764,7 +2796,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.4-postgres",
+        "step": "8.7-dbfix",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2773,7 +2805,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.6-postgres-dragfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.7-postgres-login-dbfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -2883,11 +2915,11 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8.3-session-notifications",
+        "step": "8.7-dbfix",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
-            "Enemy Sleep", "Alerts", "Accuracy", "Settings"
+            "Enemy Sleep", "Notifications", "Accuracy", "Settings"
         ],
         "modules": {
             "stock_brain": "active_step_2",
@@ -2952,7 +2984,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8.3-session-notifications",
+        "step": "8.7-dbfix",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
