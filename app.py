@@ -4,12 +4,23 @@ import json
 import time
 import hmac
 import sqlite3
+PG_DRIVER = None
+PG_IMPORT_ERROR = None
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
-except Exception:
-    psycopg2 = None
-    RealDictCursor = None
+    PG_DRIVER = "psycopg2"
+except Exception as e2:
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        PG_DRIVER = "psycopg3"
+    except Exception as e3:
+        psycopg2 = None
+        RealDictCursor = None
+        psycopg = None
+        dict_row = None
+        PG_IMPORT_ERROR = f"psycopg2: {e2}; psycopg3: {e3}"
 import secrets
 import hashlib
 import threading
@@ -57,9 +68,12 @@ class PgCursorWrap:
 
 class PgConnWrap:
     def __init__(self):
-        if psycopg2 is None:
-            raise RuntimeError("DATABASE_URL is set but psycopg2-binary is not installed")
-        self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        if PG_DRIVER is None:
+            raise RuntimeError("DATABASE_URL is set but no PostgreSQL driver could import. " + str(PG_IMPORT_ERROR))
+        if PG_DRIVER == "psycopg2":
+            self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        else:
+            self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
         self._last_insert_id = None
 
     def __enter__(self):
@@ -2752,6 +2766,7 @@ def index():
         "app": "Fries91 Torn Brain",
         "step": "8.4-postgres",
         "database": "postgres" if USE_POSTGRES else "sqlite",
+        "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
     })
 
