@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.2-step8-sessionfix
-// @description  Self-learning Torn profit and war intel app. Step 8.3: auto re-login persistence, swipe-safe tabs, and Notifications tab with mark-read controls.
+// @version      1.8.4-postgres
+// @description  Self-learning Torn profit and war intel app. Step 8.4: PostgreSQL backend support, persistent shared learning, session persistence, swipe-safe tabs, and Notifications controls.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -460,7 +460,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.3 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.4 PG</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -558,7 +558,7 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.3 Includes</h3>
+        <h3>Step 8.4 Includes</h3>
         <div class="tb-muted">Auto re-login fix, swipe-safe tabs, Notifications tab, PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Notifications, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
