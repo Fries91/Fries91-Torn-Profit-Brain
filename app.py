@@ -42,20 +42,6 @@ app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
-@app.errorhandler(Exception)
-def handle_unexpected_error(exc):
-    """Return JSON instead of an HTML 500 page so the userscript can show the real problem."""
-    try:
-        path = request.path or ""
-    except Exception:
-        path = ""
-    if path.startswith("/api/") or path in ("/health", "/"):
-        msg = str(exc) or exc.__class__.__name__
-        return jsonify({"ok": False, "error": "Server error: " + msg, "type": exc.__class__.__name__}), 500
-    raise exc
-
-
-
 def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -102,40 +88,22 @@ class PgConnWrap:
 
     def execute(self, sql, params=()):
         sql_clean = sql.strip()
-        sql_upper = sql_clean.upper()
-
-        if sql_upper.startswith("SELECT LAST_INSERT_ROWID()"):
+        if sql_clean.upper().startswith("SELECT LAST_INSERT_ROWID()"):
             class LastId:
-                def __init__(self, value):
-                    self.value = value
-                def fetchone(self):
-                    return {"id": self.value}
-                def fetchall(self):
-                    return [{"id": self.value}]
+                def __init__(self, value): self.value = value
+                def fetchone(self): return {"id": self.value}
+                def fetchall(self): return [{"id": self.value}]
             return LastId(self._last_insert_id)
-
         cur = self.conn.cursor()
-        converted = _pg_sql(sql)
-
-        # Important PostgreSQL fix:
-        # Old versions ran SELECT LASTVAL() after every INSERT. That crashes when the
-        # INSERT is into a non-SERIAL table like users/api_keys, and PostgreSQL then
-        # marks the whole transaction as aborted. Login then returned a 500 HTML page,
-        # which TornPDA showed as "Bad server response from Render."
-        # Only capture a generated id for the one place this app actually asks for it.
-        needs_id = sql_upper.startswith("INSERT INTO STOCK_PREDICTIONS")
-        if needs_id and " RETURNING " not in sql_upper:
-            converted = converted.rstrip().rstrip(";") + " RETURNING id"
-
-        cur.execute(converted, params or ())
-
-        if needs_id:
+        cur.execute(_pg_sql(sql), params or ())
+        if sql_clean.upper().startswith("INSERT"):
             try:
-                row = cur.fetchone()
+                cur2 = self.conn.cursor()
+                cur2.execute("SELECT LASTVAL() AS id")
+                row = cur2.fetchone()
                 self._last_insert_id = row["id"] if row else None
             except Exception:
                 self._last_insert_id = None
-
         return PgCursorWrap(cur)
 
     def executescript(self, script):
@@ -289,6 +257,8 @@ def _sqlite_schema():
                 avg_price REAL,
                 listing_count INTEGER NOT NULL DEFAULT 0,
                 total_quantity INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'market',
+                last_error TEXT,
                 captured_by_torn_id INTEGER,
                 created_at TEXT NOT NULL
             );
@@ -321,6 +291,8 @@ def _sqlite_schema():
                 avg_price REAL,
                 listing_count INTEGER NOT NULL DEFAULT 0,
                 total_quantity INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'market',
+                last_error TEXT,
                 captured_by_torn_id INTEGER,
                 created_at TEXT NOT NULL
             );
@@ -643,6 +615,8 @@ def _postgres_schema():
                 avg_price REAL,
                 listing_count INTEGER NOT NULL DEFAULT 0,
                 total_quantity INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'market',
+                last_error TEXT,
                 captured_by_torn_id INTEGER,
                 created_at TEXT NOT NULL
             );
@@ -675,6 +649,8 @@ def _postgres_schema():
                 avg_price REAL,
                 listing_count INTEGER NOT NULL DEFAULT 0,
                 total_quantity INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'market',
+                last_error TEXT,
                 captured_by_torn_id INTEGER,
                 created_at TEXT NOT NULL
             );
@@ -866,10 +842,26 @@ def init_db():
     if USE_POSTGRES:
         with db() as conn:
             conn.executescript(_postgres_schema())
+            try:
+                conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN source TEXT DEFAULT 'market'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN last_error TEXT")
+            except Exception:
+                pass
         return
     os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
     with db() as conn:
         conn.executescript(_sqlite_schema())
+        try:
+            conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN source TEXT DEFAULT 'market'")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN last_error TEXT")
+        except Exception:
+            pass
 
 
 init_db()
@@ -1213,6 +1205,29 @@ def normalize_item_market(payload):
     }
 
 
+def catalog_market_fallback(item_id: int):
+    """Use Torn's item catalog market_value when live item listings fail.
+    This stops the PDA from sitting on Waiting while the backend keeps trying live scans.
+    """
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT market_value, sell_value, buy_price, name FROM item_catalog WHERE item_id=?",
+                (int(item_id),),
+            ).fetchone()
+        if not row:
+            return None
+        price = row["market_value"] or row["sell_value"] or row["buy_price"]
+        if price is None:
+            return None
+        price = float(price)
+        if price <= 0:
+            return None
+        return {"lowest_price": price, "avg_price": price, "listing_count": 0, "total_quantity": 0, "source": "catalog_fallback"}
+    except Exception:
+        return None
+
+
 def item_history_stats(item_id: int, current_price=None):
     since_24 = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     since_7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -1355,16 +1370,24 @@ def scan_item_market_for_user(torn_id: int, reason: str = "auto"):
         with db() as conn:
             for wr in watch_rows:
                 w = dict(wr)
+                source = "market"
+                last_error = None
                 try:
                     data = fetch_item_market(key, int(w["item_id"]))
                     m = normalize_item_market(data)
+                    if not m.get("lowest_price"):
+                        fallback = catalog_market_fallback(int(w["item_id"]))
+                        if fallback:
+                            m = fallback
+                            source = "catalog_fallback"
+                            last_error = "Live item listings returned no prices; using Torn catalog market value."
                     rows_seen += 1
                     conn.execute(
                         """
-                        INSERT INTO item_market_snapshots(item_id, name, lowest_price, avg_price, listing_count, total_quantity, captured_by_torn_id, created_at)
-                        VALUES(?,?,?,?,?,?,?,?)
+                        INSERT INTO item_market_snapshots(item_id, name, lowest_price, avg_price, listing_count, total_quantity, source, last_error, captured_by_torn_id, created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)
                         """,
-                        (w["item_id"], w["name"], m.get("lowest_price"), m.get("avg_price"), m.get("listing_count") or 0, m.get("total_quantity") or 0, torn_id, stamp),
+                        (w["item_id"], w["name"], m.get("lowest_price"), m.get("avg_price"), m.get("listing_count") or 0, m.get("total_quantity") or 0, source, last_error, torn_id, stamp),
                     )
                     stats = item_history_stats(int(w["item_id"]), m.get("lowest_price"))
                     sig = maybe_create_item_signal(torn_id, w, m.get("lowest_price"), stats)
@@ -1372,11 +1395,26 @@ def scan_item_market_for_user(torn_id: int, reason: str = "auto"):
                         signals.append({"item_id": w["item_id"], "name": w["name"], **sig})
                     time.sleep(0.25)
                 except Exception as item_err:
-                    # Save a scan run note but keep other watched items scanning.
-                    conn.execute(
-                        "INSERT INTO scan_runs(torn_id, module, status, rows_seen, message, started_at, finished_at) VALUES(?,?,?,?,?,?,?)",
-                        (torn_id, "item_market", "item_error", 0, f"{w['name']}: {str(item_err)[:300]}", started, now_iso()),
-                    )
+                    fallback = catalog_market_fallback(int(w["item_id"]))
+                    if fallback:
+                        rows_seen += 1
+                        msg = str(item_err)[:300]
+                        conn.execute(
+                            """
+                            INSERT INTO item_market_snapshots(item_id, name, lowest_price, avg_price, listing_count, total_quantity, source, last_error, captured_by_torn_id, created_at)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (w["item_id"], w["name"], fallback.get("lowest_price"), fallback.get("avg_price"), 0, 0, "catalog_fallback", msg, torn_id, stamp),
+                        )
+                        stats = item_history_stats(int(w["item_id"]), fallback.get("lowest_price"))
+                        sig = maybe_create_item_signal(torn_id, w, fallback.get("lowest_price"), stats)
+                        if sig:
+                            signals.append({"item_id": w["item_id"], "name": w["name"], **sig})
+                    else:
+                        conn.execute(
+                            "INSERT INTO scan_runs(torn_id, module, status, rows_seen, message, started_at, finished_at) VALUES(?,?,?,?,?,?,?)",
+                            (torn_id, "item_market", "item_error", 0, f"{w['name']}: {str(item_err)[:300]}", started, now_iso()),
+                        )
         record_scan_run(torn_id, "ok", rows_seen, f"Item Market scan complete. Signals: {len(signals)}", started, module="item_market")
         return {"ok": True, "items_seen": rows_seen, "signals": signals}
     except Exception as e:
@@ -1394,9 +1432,13 @@ def latest_item_market_rows(torn_id: int):
     with db() as conn:
         for w in watches:
             snap = conn.execute(
-                "SELECT lowest_price, avg_price, listing_count, total_quantity, created_at FROM item_market_snapshots WHERE item_id=? ORDER BY id DESC LIMIT 1",
+                "SELECT lowest_price, avg_price, listing_count, total_quantity, source, last_error, created_at FROM item_market_snapshots WHERE item_id=? ORDER BY id DESC LIMIT 1",
                 (w["item_id"],),
             ).fetchone()
+            if not snap:
+                fallback = catalog_market_fallback(int(w["item_id"]))
+                if fallback:
+                    snap = {**fallback, "created_at": None, "last_error": "No live scan yet; showing Torn catalog market value."}
             stats = item_history_stats(int(w["item_id"]), snap["lowest_price"] if snap else None)
             current = snap["lowest_price"] if snap else None
             signal = "WAITING"
@@ -2796,7 +2838,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.7-dbfix",
+        "step": "8.4-postgres",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2805,7 +2847,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.7-postgres-login-dbfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.9-quiet-dockicon", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -2915,7 +2957,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8.7-dbfix",
+        "step": "8.8-notify-itemfix",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
@@ -2949,7 +2991,7 @@ def dashboard():
             (torn_id,),
         ).fetchone()["c"]
         latest_alerts = conn.execute(
-            "SELECT alert_type, title, body, link, created_at FROM alerts WHERE torn_id=? ORDER BY id DESC LIMIT 5",
+            "SELECT id, alert_type, title, body, link, is_read, created_at FROM alerts WHERE torn_id=? ORDER BY id DESC LIMIT 5",
             (torn_id,),
         ).fetchall()
         auto = conn.execute(
@@ -2984,7 +3026,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8.7-dbfix",
+        "step": "8.8-notify-itemfix",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -3258,6 +3300,12 @@ def items_watch():
         except Exception:
             return jsonify({"ok": False, "error": "Enter an item name or item ID."}), 400
         items = find_catalog_items(str(item_id), limit=1)
+        if not items and key:
+            try:
+                refresh_item_catalog(key)
+                items = find_catalog_items(str(item_id), limit=1)
+            except Exception:
+                pass
         name = items[0]["name"] if items else (q or f"Item {item_id}")
     upsert_watch_item(request.user["torn_id"], int(item_id), name, buy_zone, sell_zone)
     result = scan_item_market_for_user(request.user["torn_id"], reason="watch_added")
