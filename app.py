@@ -2312,8 +2312,8 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8-polish-smooth-dashboard",
-        "message": "Backend online. Auto scanner runs server-side after login. Step 6 adds Enemy Sleep / Activity Tracker with 72-hour faction-scoped attack and turtle windows."
+        "step": "8.3-session-notifications",
+        "message": "Backend online. Auto scanner runs server-side after login. Step 8.3 adds auto re-login persistence, swipe-safe tabs, and Notifications mark-read controls."
     })
 
 
@@ -2429,7 +2429,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8-polish-smooth-dashboard",
+        "step": "8.3-session-notifications",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
@@ -2498,7 +2498,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8-polish-smooth-dashboard",
+        "step": "8.3-session-notifications",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -2611,14 +2611,26 @@ def alerts():
             """,
             (request.user["torn_id"],),
         ).fetchall()
-    return jsonify({"ok": True, "alerts": [dict(r) for r in rows]})
+        unread = conn.execute(
+            "SELECT COUNT(*) AS c FROM alerts WHERE torn_id=? AND is_read=0",
+            (request.user["torn_id"],),
+        ).fetchone()["c"]
+    return jsonify({"ok": True, "alerts": [dict(r) for r in rows], "unread": int(unread or 0)})
 
 
 @app.post("/api/alerts/read")
 @require_auth
 def mark_alerts_read():
+    payload = request.get_json(silent=True) or {}
+    alert_id = payload.get("id")
     with db() as conn:
-        conn.execute("UPDATE alerts SET is_read=1 WHERE torn_id=?", (request.user["torn_id"],))
+        if alert_id:
+            conn.execute(
+                "UPDATE alerts SET is_read=1 WHERE torn_id=? AND id=?",
+                (request.user["torn_id"], int(alert_id)),
+            )
+        else:
+            conn.execute("UPDATE alerts SET is_read=1 WHERE torn_id=?", (request.user["torn_id"],))
     return jsonify({"ok": True})
 
 
