@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.4-postgres
-// @description  Self-learning Torn profit and war intel app. Step 8.4: PostgreSQL backend support, persistent shared learning, session persistence, swipe-safe tabs, and Notifications controls.
+// @version      1.8.6-dragfix
+// @description  Self-learning Torn profit and war intel app. Step 8.6: PostgreSQL fix, draggable AI badge, persistent session, swipe-safe tabs, and Notifications controls.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -25,6 +25,7 @@
   const K_TOKEN_BACKUP = 'fries91_torn_brain_token_backup_v1';
   const K_APIKEY = 'fries91_torn_brain_api_key_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
+  const K_ICON_POS = 'fries91_torn_brain_icon_pos_v1';
   const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Notifications', 'Accuracy', 'Settings'];
 
   let state = null;
@@ -87,7 +88,7 @@
       box-shadow: 0 8px 24px rgba(0,0,0,.70);
       cursor: pointer;
       user-select: none;
-      touch-action: manipulation;
+      touch-action: none;
       animation: tbPulseGlow 2.4s ease-in-out infinite;
       overflow: visible;
     }
@@ -447,6 +448,69 @@
 
   function el(id) { return document.getElementById(id); }
 
+  function loadIconPosition(icon) {
+    let pos = null;
+    try { pos = JSON.parse(GM_getValue(K_ICON_POS, '') || 'null'); } catch (_) {}
+    if (!pos) {
+      try { pos = JSON.parse(window.localStorage.getItem(K_ICON_POS) || 'null'); } catch (_) {}
+    }
+    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+      const maxLeft = Math.max(4, window.innerWidth - 70);
+      const maxTop = Math.max(4, window.innerHeight - 50);
+      icon.style.left = Math.min(Math.max(4, pos.left), maxLeft) + 'px';
+      icon.style.top = Math.min(Math.max(4, pos.top), maxTop) + 'px';
+      icon.style.bottom = 'auto';
+      icon.style.right = 'auto';
+    }
+  }
+
+  function saveIconPosition(left, top) {
+    const pos = { left: Math.round(left), top: Math.round(top) };
+    try { GM_setValue(K_ICON_POS, JSON.stringify(pos)); } catch (_) {}
+    try { window.localStorage.setItem(K_ICON_POS, JSON.stringify(pos)); } catch (_) {}
+  }
+
+  function setupDraggableIcon(icon) {
+    loadIconPosition(icon);
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0, moved = false, dragging = false;
+    const begin = (x, y, e) => {
+      const r = icon.getBoundingClientRect();
+      startX = x; startY = y; startLeft = r.left; startTop = r.top;
+      moved = false; dragging = true;
+      icon.style.bottom = 'auto'; icon.style.right = 'auto';
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+    };
+    const move = (x, y, e) => {
+      if (!dragging) return;
+      const dx = x - startX, dy = y - startY;
+      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) moved = true;
+      if (!moved) return;
+      const maxLeft = Math.max(4, window.innerWidth - icon.offsetWidth - 4);
+      const maxTop = Math.max(4, window.innerHeight - icon.offsetHeight - 4);
+      const left = Math.min(Math.max(4, startLeft + dx), maxLeft);
+      const top = Math.min(Math.max(4, startTop + dy), maxTop);
+      icon.style.left = left + 'px';
+      icon.style.top = top + 'px';
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+    };
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const r = icon.getBoundingClientRect();
+      saveIconPosition(r.left, r.top);
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      if (!moved) togglePanel();
+      setTimeout(() => { moved = false; }, 0);
+    };
+    icon.addEventListener('touchstart', e => { const t = e.touches && e.touches[0]; if (t) begin(t.clientX, t.clientY, e); }, { passive:false });
+    icon.addEventListener('touchmove', e => { const t = e.touches && e.touches[0]; if (t) move(t.clientX, t.clientY, e); }, { passive:false });
+    icon.addEventListener('touchend', end, { passive:false });
+    icon.addEventListener('mousedown', e => begin(e.clientX, e.clientY, e));
+    document.addEventListener('mousemove', e => move(e.clientX, e.clientY, e));
+    document.addEventListener('mouseup', end);
+    icon.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); });
+  }
+
   function mount() {
     if (mounted || el('tb-icon')) return;
     mounted = true;
@@ -460,7 +524,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.4 PG</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.6 Drag</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -468,8 +532,7 @@
     `;
     document.body.appendChild(panel);
 
-    icon.addEventListener('click', togglePanel);
-    icon.addEventListener('touchend', function (e) { e.preventDefault(); togglePanel(); }, { passive: false });
+    setupDraggableIcon(icon);
     el('tb-close').addEventListener('click', closePanel);
     el('tb-close').addEventListener('touchend', function (e) { e.preventDefault(); closePanel(); }, { passive: false });
 
@@ -558,8 +621,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.4 Includes</h3>
-        <div class="tb-muted">Auto re-login fix, swipe-safe tabs, Notifications tab, PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Notifications, and Accuracy Learning.</div>
+        <h3>Step 8.6 Includes</h3>
+        <div class="tb-muted">PostgreSQL driver fix, movable AI🫰 badge, auto re-login, swipe-safe tabs, Notifications tab, PDA fetch fix, backend-first dashboard, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
