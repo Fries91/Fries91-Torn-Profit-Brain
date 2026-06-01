@@ -2,7 +2,7 @@
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
 // @version      1.8.2-step8-sessionfix
-// @description  Self-learning Torn profit and war intel app. Step 8.2: login persistence/session fix, PDA fetch fix, and clearer backend connection errors.
+// @description  Self-learning Torn profit and war intel app. Step 8.3: auto re-login persistence, swipe-safe tabs, and Notifications tab with mark-read controls.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -23,15 +23,21 @@
 
   const K_TOKEN = 'fries91_torn_brain_token_v1';
   const K_TOKEN_BACKUP = 'fries91_torn_brain_token_backup_v1';
+  const K_APIKEY = 'fries91_torn_brain_api_key_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
-  const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Alerts', 'Accuracy', 'Settings'];
+  const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Notifications', 'Accuracy', 'Settings'];
 
   let state = null;
   let dashboard = null;
   let activeTab = GM_getValue('fries91_torn_brain_tab_v1', 'Overview');
+  if (activeTab === 'Alerts') activeTab = 'Notifications';
   let mounted = false;
   let refreshTimer = null;
   let refreshBusy = false;
+  let restoreBusy = false;
+  let tabsTouchStartX = 0;
+  let tabsTouchStartY = 0;
+  let tabsMoved = false;
   let lastStateRefresh = 0;
   let authToken = '';
 
@@ -335,7 +341,9 @@
     .tb-compact-list { display:grid; gap:7px; }
     .tb-compact-row { border:1px solid rgba(74,222,128,.12); border-radius:12px; padding:8px; background:rgba(0,0,0,.18); font-size:12px; }
     .tb-refresh-line { font-size:10px; color:#86efac; margin-top:7px; }
-    .tb-btn:active, .tb-tab:active, #tb-icon:active { transform: scale(.97); }
+    .tb-btn:active, #tb-icon:active { transform: scale(.97); }
+    .tb-tab:active { transform:none; }
+    .tb-note-dot { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; border-radius:999px; padding:0 5px; background:#dc2626; color:#fff; font-size:11px; margin-left:5px; box-shadow:0 0 14px rgba(220,38,38,.6); }
     .tb-body { scroll-behavior:smooth; }
     .tb-sticky-actions { position:sticky; bottom:0; padding:8px 0 0; background:linear-gradient(180deg, transparent, rgba(5,10,7,.96) 42%); }
 
@@ -370,10 +378,44 @@
     } catch (_) {}
   }
 
+
+  function savedApiKey() {
+    try { return GM_getValue(K_APIKEY, '') || window.localStorage.getItem(K_APIKEY) || ''; } catch (_) {}
+    try { return window.localStorage.getItem(K_APIKEY) || ''; } catch (_) {}
+    return '';
+  }
+
+  function setSavedApiKey(v) {
+    const key = v || '';
+    try { if (key) GM_setValue(K_APIKEY, key); else GM_deleteValue(K_APIKEY); } catch (_) {}
+    try { if (key) window.localStorage.setItem(K_APIKEY, key); else window.localStorage.removeItem(K_APIKEY); } catch (_) {}
+  }
+
+  async function restoreLogin(reason = 'restoring') {
+    if (restoreBusy) return false;
+    const key = savedApiKey();
+    if (!key) return false;
+    restoreBusy = true;
+    try {
+      const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ api_key: key }), noAuth: true });
+      if (data && data.token) {
+        setToken(data.token);
+      setSavedApiKey(key);
+        try { await api('/api/auto/start', { method: 'POST', body: '{}' }); } catch (_) {}
+        return true;
+      }
+    } catch (_) {
+      return false;
+    } finally {
+      restoreBusy = false;
+    }
+    return false;
+  }
+
   function api(path, options = {}) {
     const method = options.method || 'GET';
     const headers = Object.assign({ 'Content-Type': 'application/json', 'Accept': 'application/json' }, options.headers || {});
-    if (token()) headers.Authorization = 'Bearer ' + token();
+    if (!options.noAuth && token()) headers.Authorization = 'Bearer ' + token();
     const body = options.body || null;
 
     // TornPDA can be picky with normal cross-site fetch(). GM_xmlhttpRequest is smoother for userscripts.
@@ -418,7 +460,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.2 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.3 Smooth</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -450,13 +492,44 @@
     if (el('tb-panel')?.classList.contains('tb-show')) closePanel(); else openPanel();
   }
 
+  function selectTab(name) {
+    if (!name || name === activeTab) return;
+    activeTab = name;
+    GM_setValue('fries91_torn_brain_tab_v1', activeTab);
+    renderTabs();
+    render();
+  }
+
   function renderTabs() {
     const tabs = el('tb-tabs');
     if (!tabs) return;
-    tabs.innerHTML = TABS.map(t => `<button class="tb-tab ${t === activeTab ? 'active' : ''}" data-tab="${t}">${t}</button>`).join('');
+    const unread = Number(state?.unread_alerts || 0);
+    tabs.innerHTML = TABS.map(t => {
+      const label = t === 'Notifications' && unread > 0 ? `${t}<span class="tb-note-dot">${unread > 99 ? '99+' : unread}</span>` : t;
+      return `<button class="tb-tab ${t === activeTab ? 'active' : ''}" data-tab="${t}">${label}</button>`;
+    }).join('');
+
+    tabs.ontouchstart = (e) => {
+      const t = e.touches && e.touches[0];
+      tabsTouchStartX = t ? t.clientX : 0;
+      tabsTouchStartY = t ? t.clientY : 0;
+      tabsMoved = false;
+    };
+    tabs.ontouchmove = (e) => {
+      const t = e.touches && e.touches[0];
+      if (!t) return;
+      if (Math.abs(t.clientX - tabsTouchStartX) > 10 || Math.abs(t.clientY - tabsTouchStartY) > 10) tabsMoved = true;
+    };
     tabs.querySelectorAll('.tb-tab').forEach(btn => {
-      btn.addEventListener('click', () => { activeTab = btn.dataset.tab; GM_setValue('fries91_torn_brain_tab_v1', activeTab); renderTabs(); render(); });
-      btn.addEventListener('touchend', (e) => { e.preventDefault(); activeTab = btn.dataset.tab; GM_setValue('fries91_torn_brain_tab_v1', activeTab); renderTabs(); render(); }, { passive: false });
+      btn.onclick = (e) => {
+        if (tabsMoved) { e.preventDefault(); e.stopPropagation(); tabsMoved = false; return; }
+        selectTab(btn.dataset.tab);
+      };
+      btn.ontouchend = (e) => {
+        if (tabsMoved) { tabsMoved = false; return; }
+        e.preventDefault();
+        selectTab(btn.dataset.tab);
+      };
     });
   }
 
@@ -485,8 +558,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.2 Includes</h3>
-        <div class="tb-muted">Login persistence fix, PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Alerts, and Accuracy Learning.</div>
+        <h3>Step 8.3 Includes</h3>
+        <div class="tb-muted">Auto re-login fix, swipe-safe tabs, Notifications tab, PDA fetch fix, animated AI🫰 badge, smoother backend-first dashboard, safer refresh, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, Notifications, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
     `;
@@ -534,16 +607,16 @@
           </div>
         </div>
         <div class="tb-card">
-          <h3>Latest Alerts</h3>
+          <h3>Latest Notifications</h3>
           <div class="tb-compact-list">
-            ${alerts.map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span>${a.link ? `<br><a class="tb-link" href="${escapeHtml(a.link)}">Open</a>` : ''}</div>`).join('') || '<div class="tb-muted">No alerts yet.</div>'}
+            ${alerts.map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span>${a.link ? `<br><a class="tb-link" href="${escapeHtml(a.link)}">Open</a>` : ''}</div>`).join('') || '<div class="tb-muted">No notifications yet.</div>'}
           </div>
         </div>
         <div class="tb-card">
           <h3>Status</h3>
           <div class="tb-grid">
             <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-            <div><span class="tb-pill">Alerts</span><br>${escapeHtml(dashboard.unread_alerts || 0)} unread</div>
+            <div><span class="tb-pill">Notifications</span><br>${escapeHtml(dashboard.unread_alerts || 0)} unread</div>
             <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
             <div><span class="tb-pill">Server</span><br>${escapeHtml(shortTime(dashboard.server_time))}</div>
           </div>
@@ -566,7 +639,7 @@
         <h3>Overview</h3>
         <div class="tb-grid">
           <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-          <div><span class="tb-pill">Alerts</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
+          <div><span class="tb-pill">Notifications</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
           <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
           <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(shortTime(auto.last_scan_at))}</div>
         </div>
@@ -575,39 +648,56 @@
   }
 
 
-  async function renderAlerts() {
+  async function renderNotifications() {
     const body = el('tb-body');
+    if (!token() && savedApiKey()) {
+      body.innerHTML = `<div class="tb-card"><h3>Restoring login...</h3><div class="tb-scan">Using saved key on this device. No need to paste it again.</div></div>`;
+      const ok = await restoreLogin('notifications');
+      if (ok) return renderNotifications();
+    }
     if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
-    body.innerHTML = `<div class="tb-card"><h3>Alerts</h3><div class="tb-muted">Loading alerts...</div></div>`;
+    body.innerHTML = `<div class="tb-card"><h3>Notifications</h3><div class="tb-muted">Loading notifications...</div></div>`;
     try {
       const data = await api('/api/alerts');
       const cards = (data.alerts || []).map(a => `
-        <div class="tb-card">
+        <div class="tb-card ${a.is_read ? '' : 'tb-unread'}">
           <h3>${escapeHtml(a.title)} ${a.is_read ? '' : '<span class="tb-pill">new</span>'}</h3>
           <div class="tb-muted">${escapeHtml(a.created_at)} · ${escapeHtml(a.alert_type)}</div>
           <p>${escapeHtml(a.body)}</p>
-          ${a.link ? `<a class="tb-link" href="${escapeHtml(a.link)}">Open Link</a>` : ''}
+          <div class="tb-actions">
+            ${a.link ? `<a class="tb-link" href="${escapeHtml(a.link)}">Open Link</a>` : ''}
+            ${a.is_read ? '' : `<button class="tb-btn tb-mark-one" data-id="${escapeHtml(a.id)}">Mark read</button>`}
+          </div>
         </div>
-      `).join('') || `<div class="tb-card"><h3>No alerts yet</h3><div class="tb-muted">Future buy zones, stock changes, points moves, travel chances, and enemy windows will show here.</div></div>`;
+      `).join('') || `<div class="tb-card"><h3>No notifications yet</h3><div class="tb-muted">Buy zones, stock changes, points moves, travel chances, and enemy windows will show here.</div></div>`;
       body.innerHTML = `
         <div class="tb-card">
-          <h3>Alerts</h3>
+          <h3>Notifications</h3>
+          <div class="tb-muted">Unread: ${escapeHtml(data.unread || state?.unread_alerts || 0)}. Marking read clears the red AI🫰 badge.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-mark-read">Mark all read</button>
-            <button class="tb-btn" id="tb-test-alert">Test alert</button>
+            <button class="tb-btn" id="tb-refresh-notes">Refresh</button>
+            <button class="tb-btn" id="tb-test-alert">Test notification</button>
           </div>
         </div>
         ${cards}
       `;
-      el('tb-mark-read')?.addEventListener('click', async () => { await api('/api/alerts/read', { method: 'POST', body: '{}' }); await refreshState(); render(); });
-      el('tb-test-alert')?.addEventListener('click', async () => { await api('/api/dev/test-alert', { method: 'POST', body: '{}' }); await refreshState(); render(); });
+      el('tb-mark-read')?.addEventListener('click', async () => { await api('/api/alerts/read', { method: 'POST', body: '{}' }); await refreshState(true); await renderNotifications(); });
+      el('tb-refresh-notes')?.addEventListener('click', async () => { await refreshState(true); await renderNotifications(); });
+      el('tb-test-alert')?.addEventListener('click', async () => { await api('/api/dev/test-alert', { method: 'POST', body: '{}' }); await refreshState(true); await renderNotifications(); });
+      document.querySelectorAll('.tb-mark-one').forEach(btn => btn.addEventListener('click', async () => {
+        await api('/api/alerts/read', { method: 'POST', body: JSON.stringify({ id: btn.dataset.id }) });
+        await refreshState(true);
+        await renderNotifications();
+      }));
     } catch (e) {
-      body.innerHTML = `<div class="tb-card"><h3>Alerts</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
+      body.innerHTML = `<div class="tb-card"><h3>Notifications</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
     }
   }
 
   async function renderSettings() {
     const body = el('tb-body');
+    if (!token() && savedApiKey()) { body.innerHTML = `<div class="tb-card"><h3>Restoring login...</h3><div class="tb-scan">Using saved key on this device. No need to paste it again.</div></div>`; const ok = await restoreLogin('settings'); if (ok) return renderSettings(); }
     if (!token()) { body.innerHTML = renderLogin(); bindLogin(); return; }
     body.innerHTML = `<div class="tb-card"><h3>Settings</h3><div class="tb-muted">Loading settings...</div></div>`;
     try {
@@ -639,7 +729,7 @@
             <option value="true" ${s.auto_scan_enabled === 'true' ? 'selected' : ''}>true</option>
             <option value="false" ${s.auto_scan_enabled === 'false' ? 'selected' : ''}>false</option>
           </select>
-          <label class="tb-muted">Alerts enabled</label>
+          <label class="tb-muted">Notifications enabled</label>
           <select class="tb-select" id="set-alerts">
             <option value="true" ${s.alerts_enabled === 'true' ? 'selected' : ''}>true</option>
             <option value="false" ${s.alerts_enabled === 'false' ? 'selected' : ''}>false</option>
@@ -691,7 +781,7 @@
           </div>
         </div>
       `;
-      el('tb-logout')?.addEventListener('click', async () => { try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) {} setToken(''); state = null; renderTabs(); render(); });
+      el('tb-logout')?.addEventListener('click', async () => { try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) {} setToken(''); setSavedApiKey(''); state = null; renderTabs(); render(); });
       el('tb-save-settings')?.addEventListener('click', saveSettings);
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Settings</h3><div class="tb-err">${escapeHtml(e.message)}</div></div>`;
@@ -903,7 +993,7 @@
               <div class="tb-muted">${escapeHtml(s.created_at)} · Buy ${fmtMoney(s.buy_zone)} · Sell ${fmtMoney(s.sell_zone)}</div>
               <div class="tb-muted">${escapeHtml(s.reason)}</div>
               ${s.link ? `<a class="tb-link" href="${escapeHtml(s.link)}">Go Buy / Open Market</a>` : ''}
-            </div>`).join('') : `<div class="tb-muted">No signals yet. Alerts will appear when watched items hit buy or sell zones.</div>`}
+            </div>`).join('') : `<div class="tb-muted">No signals yet. Notifications will appear when watched items hit buy or sell zones.</div>`}
         </div>
       `;
       el('tb-item-search')?.addEventListener('click', searchItems);
@@ -1041,7 +1131,7 @@
               <div class="tb-muted">${escapeHtml(s.created_at)} · Buy ${fmtMoney(s.buy_zone)} · Sell ${fmtMoney(s.sell_zone)}</div>
               <div class="tb-muted">${escapeHtml(s.reason)}</div>
               ${s.link ? `<a class="tb-link" href="${escapeHtml(s.link)}">Open Points Market</a>` : ''}
-            </div>`).join('') : `<div class="tb-muted">No points signals yet. Alerts will appear when points hit buy or sell zones.</div>`}
+            </div>`).join('') : `<div class="tb-muted">No points signals yet. Notifications will appear when points hit buy or sell zones.</div>`}
         </div>
       `;
       el('tb-points-scan')?.addEventListener('click', scanPointsNow);
@@ -1116,14 +1206,14 @@
           }).join('') : `<div class="tb-muted">No routes ranked yet. The backend will learn as item/market snapshots build.</div>`}
         </div>
         <div class="tb-card">
-          <h3>Latest Travel Alerts</h3>
+          <h3>Latest Travel Notifications</h3>
           ${recs.length ? recs.map(r => `
             <div class="tb-market-row">
               <div class="tb-market-title"><b>${escapeHtml(r.signal)} · ${escapeHtml(r.country)}</b><span>${fmtMoney(r.estimated_profit)}</span></div>
               <div class="tb-muted">${escapeHtml(r.created_at)} · ${escapeHtml(r.item_name)} · Arrival ${escapeHtml(r.arrival_chance)}%</div>
               <div class="tb-muted">${escapeHtml(r.reason)}</div>
               ${r.link ? `<a class="tb-link" href="${escapeHtml(r.link)}">Open Travel Agency</a>` : ''}
-            </div>`).join('') : `<div class="tb-muted">No GO alerts yet. Alerts appear when a route beats your profit/chance settings.</div>`}
+            </div>`).join('') : `<div class="tb-muted">No GO alerts yet. Notifications appear when a route beats your profit/chance settings.</div>`}
         </div>
       `;
       el('tb-travel-scan')?.addEventListener('click', scanTravelNow);
@@ -1329,10 +1419,15 @@
     const body = el('tb-body');
     if (!body) return;
 
-    if (activeTab === 'Alerts') { renderAlerts(); return; }
+    if (activeTab === 'Notifications') { renderNotifications(); return; }
     if (activeTab === 'Settings') { renderSettings(); return; }
 
     if (!token()) {
+      if (savedApiKey()) {
+        body.innerHTML = `<div class="tb-card"><h3>Restoring login...</h3><div class="tb-scan">Using saved key on this device. No need to paste it again.</div></div>`;
+        restoreLogin('render').then(ok => { if (ok) render(); else { body.innerHTML = renderLogin(); bindLogin(); } });
+        return;
+      }
       body.innerHTML = renderLogin();
       bindLogin();
       return;
@@ -1393,9 +1488,14 @@
       // Only clear the saved token when the backend clearly says the token is invalid.
       if (e.status === 401 || e.status === 403) {
         setToken('');
-        state = null;
-        updateBadge();
-        if (!silent) render();
+        const restored = await restoreLogin('expired');
+        if (restored) {
+          try { state = await api('/api/state'); lastStateRefresh = now; updateBadge(); if (!silent && activeTab === 'Overview') render(); } catch (_) {}
+        } else {
+          state = null;
+          updateBadge();
+          if (!silent) render();
+        }
       } else {
         updateBadge();
         if (!silent && activeTab === 'Overview') {
