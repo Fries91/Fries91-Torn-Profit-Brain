@@ -2773,7 +2773,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.4-postgres", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.6-postgres-dragfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
