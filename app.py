@@ -1,5 +1,3 @@
-Torn Brain Step 8.11 app.py
-Copy all
 import os
 import re
 import json
