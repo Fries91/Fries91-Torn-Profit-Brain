@@ -1,3 +1,5 @@
+Torn Brain Step 8.11 app.py
+Copy all
 import os
 import re
 import json
@@ -96,14 +98,9 @@ class PgConnWrap:
             return LastId(self._last_insert_id)
         cur = self.conn.cursor()
         cur.execute(_pg_sql(sql), params or ())
-        if sql_clean.upper().startswith("INSERT"):
-            try:
-                cur2 = self.conn.cursor()
-                cur2.execute("SELECT LASTVAL() AS id")
-                row = cur2.fetchone()
-                self._last_insert_id = row["id"] if row else None
-            except Exception:
-                self._last_insert_id = None
+        # Do not call PostgreSQL LASTVAL() automatically. Some inserts target tables
+        # without sequences (users/api_keys/sessions), which can crash login or scans.
+        # Code that needs a new id should query the row it just inserted.
         return PgCursorWrap(cur)
 
     def executescript(self, script):
@@ -895,6 +892,28 @@ def torn_get(section: str, selections: str, key: str, torn_id: str = ""):
     return data
 
 
+def validate_torn_key_profile(key: str):
+    """Validate a user key with graceful fallbacks for limited keys."""
+    errors = []
+    for selection in ("profile", "basic", "personalstats"):
+        try:
+            data = torn_get("user", selection, key)
+            torn_id = int(data.get("player_id") or data.get("id") or data.get("user_id") or data.get("ID") or 0)
+            if torn_id:
+                faction = data.get("faction") or {}
+                return {
+                    "player_id": torn_id,
+                    "name": str(data.get("name") or f"User {torn_id}"),
+                    "level": data.get("level"),
+                    "faction": faction if isinstance(faction, dict) else {},
+                    "validation_selection": selection,
+                }
+            errors.append(f"{selection}: no player_id in response")
+        except Exception as e:
+            errors.append(f"{selection}: {e}")
+    raise ValueError("Could not validate API key with profile/basic/personalstats. Make sure the limited key allows basic user/profile reads. " + " | ".join(errors[-3:]))
+
+
 
 def get_api_key(torn_id: int) -> str:
     with db() as conn:
@@ -1052,8 +1071,12 @@ def choose_stock_pick(torn_id: int, stocks, force=False):
                 """,
                 (torn_id, best["stock_id"], best["acronym"], best["name"], best["current_price"], best["score"], best["confidence"], best["expected_24h_pct"], best["reason"], created),
             )
-            new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-            if current:
+            new_row = conn.execute(
+                "SELECT id FROM stock_predictions WHERE scope='global' AND acronym=? AND created_at=? ORDER BY id DESC LIMIT 1",
+                (best["acronym"], created),
+            ).fetchone()
+            new_id = new_row["id"] if new_row else None
+            if current and new_id:
                 conn.execute("UPDATE stock_predictions SET replaced_by_id=? WHERE id=?", (new_id, current["id"]))
                 conn.execute(
                     "INSERT INTO alerts(torn_id, alert_type, title, body, link, created_at) VALUES(?,?,?,?,?,?)",
@@ -2838,7 +2861,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.10-floaticon",
+        "step": "8.11-login-stockfix",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2847,7 +2870,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.10-floaticon", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step8.11-login-stockfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -2863,7 +2886,7 @@ def login():
         return jsonify({"ok": False, "error": "Enter a valid Torn API key."}), 400
 
     try:
-        profile = torn_get("user", "profile", key)
+        profile = validate_torn_key_profile(key)
     except Exception as e:
         return jsonify({"ok": False, "error": f"Could not validate API key: {e}"}), 400
 
@@ -2957,7 +2980,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8.10-floaticon",
+        "step": "8.11-login-stockfix",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
@@ -3026,7 +3049,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8.10-floaticon",
+        "step": "8.11-login-stockfix",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
