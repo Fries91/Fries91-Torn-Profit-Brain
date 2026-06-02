@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.10-floaticon
-// @description  Self-learning Torn profit and war intel app. Step 8.10: quiet Notifications tab count only, smaller floating movable AI icon, item fallback, PostgreSQL, and PDA fixes.
+// @version      1.8.11-login-stockfix
+// @description  Self-learning Torn profit and war intel app. Step 8.11: limited key login fallback, stock scan PostgreSQL fix, smaller floating AI icon, and PDA fixes.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -511,7 +511,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.10 Float</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.11 Fix</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -600,7 +600,7 @@
     return `
       <div class="tb-card">
         <h3>Login</h3>
-        <div class="tb-muted">Enter your Torn API key. This app only reads Torn data. It does not auto-buy, auto-sell, auto-attack, or change your Torn account.</div>
+        <div class="tb-muted">Enter your Torn API key. Limited keys are supported, but they must allow basic user/profile reads. This app only reads Torn data. It does not auto-buy, auto-sell, auto-attack, or change your Torn account.</div>
         <input class="tb-input" id="tb-api-key" type="password" placeholder="Paste Torn API key" autocomplete="off" />
         <div class="tb-actions">
           <button class="tb-btn" id="tb-login">Connect</button>
@@ -608,7 +608,7 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.9 Includes</h3>
+        <h3>Step 8.11 Includes</h3>
         <div class="tb-muted">Quiet notification mode, Notifications tab count only, smaller floating movable AI🫰 icon, item price fallback fix, auto re-login, swipe-safe tabs, PostgreSQL storage, backend-first dashboard, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, and Accuracy Learning.</div>
         <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
       </div>
