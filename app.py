@@ -1039,35 +1039,101 @@ def latest_active_stock_pick():
     return dict(row) if row else None
 
 
+def _parse_iso_age_hours(value):
+    """Return age in hours for an ISO timestamp, or a large value if unreadable."""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+    except Exception:
+        return 9999.0
+
+
 def choose_stock_pick(torn_id: int, stocks, force=False):
+    """
+    Pick one 24h stock, but do not freeze forever.
+
+    Earlier versions compared the new best score against the saved score from when
+    the old pick was first created. That made a pick feel stuck because the old
+    saved score never decayed. This version rescans and re-scores the current
+    pick every time, then uses the live score comparison.
+    """
     scored = sorted([score_stock(s) for s in stocks], key=lambda x: x["score"], reverse=True)
     if not scored:
-        return {"pick": None, "changed": False, "ranked": []}
+        return {"pick": None, "changed": False, "ranked": [], "decision": "No scored stocks available."}
+
     best = scored[0]
     current = latest_active_stock_pick()
+    current_live = None
+    if current:
+        for row in scored:
+            if str(row.get("acronym")) == str(current.get("acronym")):
+                current_live = row
+                break
+
     changed = False
     changed_reason = ""
-    gap = 15.0
+    decision = "Holding current pick."
+
+    # Lower default gap. We still avoid flipping every scan, but the pick can move.
+    gap = 6.0
     try:
         with db() as conn:
             row = conn.execute("SELECT setting_value FROM settings WHERE torn_id=? AND setting_key='stock_pick_change_score_gap'", (torn_id,)).fetchone()
-            if row: gap = float(row["setting_value"])
+            if row:
+                # Clamp old saved settings like 15 down to a practical range so older users do not get stuck forever.
+                gap = max(3.0, min(float(row["setting_value"]), 8.0))
     except Exception:
         pass
-    should_replace = force or current is None or (best["score"] >= float(current["score"]) + gap) or float(current["confidence"] or 0) < 20
+
+    age_hours = _parse_iso_age_hours(current.get("created_at")) if current else 9999.0
+    current_score_live = float(current_live["score"]) if current_live else -999.0
+    current_conf_live = float(current_live["confidence"]) if current_live else 0.0
+    best_score = float(best["score"])
+    best_conf = float(best["confidence"])
+
+    should_replace = False
+    replace_kind = ""
+
+    if force or current is None:
+        should_replace = True
+        replace_kind = "new pick" if current is None else "forced refresh"
+    elif age_hours >= 24:
+        should_replace = True
+        replace_kind = "24h refresh"
+    elif current_live is None:
+        should_replace = True
+        replace_kind = "old pick missing from live stock scan"
+    elif best["acronym"] != current["acronym"] and best_score >= current_score_live + gap:
+        should_replace = True
+        replace_kind = "better live score"
+    elif best["acronym"] != current["acronym"] and current_score_live < 28 and best_score >= 35:
+        should_replace = True
+        replace_kind = "current pick weakened"
+    elif best["acronym"] != current["acronym"] and best_conf >= current_conf_live + 20 and best_score >= current_score_live + 3:
+        should_replace = True
+        replace_kind = "higher confidence replacement"
+
     if should_replace:
         created = now_iso()
         with db() as conn:
             if current:
                 conn.execute("UPDATE stock_predictions SET status='replaced', replaced_at=? WHERE id=?", (created, current["id"]))
                 changed = True
-                changed_reason = f"{best['acronym']} beat old pick {current['acronym']} by the drastic-change rule."
+                changed_reason = (
+                    f"{best['acronym']} replaced {current['acronym']} ({replace_kind}). "
+                    f"Live score {best_score:.2f} vs {current_score_live:.2f}; pick age {age_hours:.1f}h."
+                )
+            else:
+                changed_reason = f"{best['acronym']} selected as first active 24h pick."
+
             conn.execute(
                 """
                 INSERT INTO stock_predictions(scope, chosen_by_torn_id, stock_id, acronym, name, pick_price, score, confidence, expected_24h_pct, reason, created_at)
                 VALUES('global',?,?,?,?,?,?,?,?,?,?)
                 """,
-                (torn_id, best["stock_id"], best["acronym"], best["name"], best["current_price"], best["score"], best["confidence"], best["expected_24h_pct"], best["reason"], created),
+                (torn_id, best["stock_id"], best["acronym"], best["name"], best["current_price"], best["score"], best["confidence"], best["expected_24h_pct"], best["reason"] + f"; {replace_kind}", created),
             )
             new_row = conn.execute(
                 "SELECT id FROM stock_predictions WHERE scope='global' AND acronym=? AND created_at=? ORDER BY id DESC LIMIT 1",
@@ -1081,8 +1147,23 @@ def choose_stock_pick(torn_id: int, stocks, force=False):
                     (torn_id, "stock_changed", "Stock Brain changed today's pick", changed_reason, "https://www.torn.com/page.php?sid=stocks", created),
                 )
         current = latest_active_stock_pick()
-    return {"pick": current, "changed": changed, "changed_reason": changed_reason, "ranked": scored[:10]}
+        decision = changed_reason
+    else:
+        decision = (
+            f"Holding {current['acronym']}. Best live score is {best['acronym']} {best_score:.2f}; "
+            f"current live score {current_score_live:.2f}; change gap {gap:.1f}; age {age_hours:.1f}h."
+        )
 
+    return {
+        "pick": current,
+        "changed": changed,
+        "changed_reason": changed_reason,
+        "ranked": scored[:10],
+        "decision": decision,
+        "current_live_score": round(current_score_live, 2) if current else None,
+        "pick_age_hours": round(age_hours, 2) if current else None,
+        "change_gap_used": gap,
+    }
 
 def save_stock_snapshots(torn_id: int, stocks):
     created = now_iso()
@@ -2403,7 +2484,7 @@ def perform_stock_scan_for_user(torn_id: int, reason: str = "auto"):
             raise ValueError("Torn returned no stock rows.")
         save_stock_snapshots(torn_id, stocks)
         result = choose_stock_pick(torn_id, stocks)
-        message = "Auto scan complete."
+        message = "Auto scan complete. " + str(result.get("decision") or "")
         if result.get("changed"):
             message += " Stock pick changed."
         with db() as conn:
@@ -2478,21 +2559,14 @@ def auto_scanner_loop():
     while True:
         try:
             for torn_id in due_auto_scan_users():
+                # Lite focus mode: only run the modules that matter for profit prediction.
+                # This keeps Render + TornPDA smoother and stops wasting calls on unused modules.
                 perform_stock_scan_for_user(torn_id, reason="auto")
-                time.sleep(1.0)
+                time.sleep(0.8)
                 scan_item_market_for_user(torn_id, reason="auto")
-                time.sleep(1.0)
-                scan_points_market_for_user(torn_id, reason="auto")
-                time.sleep(1.0)
+                time.sleep(0.8)
                 scan_travel_profit_for_user(torn_id, reason="auto")
-                time.sleep(1.0)
-                scan_enemy_activity_for_user(torn_id, reason="auto")
-                time.sleep(1.0)
-                try:
-                    run_accuracy_learning()
-                except Exception:
-                    pass
-                time.sleep(1.5)
+                time.sleep(1.2)
         except Exception:
             pass
         time.sleep(35)
@@ -2859,7 +2933,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "8.11-login-stockfix",
+        "step": "9.0-lite-focus",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2868,7 +2942,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step8.11-login-stockfix", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step9.0-lite-focus", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -2935,7 +3009,7 @@ def login():
             INSERT INTO alerts(torn_id, alert_type, title, body, link, created_at)
             VALUES(?,?,?,?,?,?)
             """,
-            (torn_id, "system", "Torn Brain connected", "Auto Stock Brain, Item Market, Points Watcher, Travel Profit, and Enemy Sleep tracker are active. The backend starts watching after login and keeps the userscript smooth.", None, created),
+            (torn_id, "system", "Torn Brain connected", "Stock Brain, Item Market, and Travel Profit watcher are active. This lite version focuses only on market prediction and smoother PDA performance.", None, created),
         )
 
     enable_auto_scan(torn_id, immediate=True)
@@ -2978,20 +3052,16 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "8.11-login-stockfix",
+        "step": "9.0-lite-focus",
         "user": request.user,
         "tabs": [
-            "Overview", "Stock Brain", "Item Market", "Travel Profit", "Points Watcher",
-            "Enemy Sleep", "Notifications", "Accuracy", "Settings"
+            "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
         ],
         "modules": {
-            "stock_brain": "active_step_2",
-            "item_market": "active_step_3",
-            "points_watcher": "active_step_4",
-            "travel_profit": "active_step_5",
-            "enemy_sleep": "active_step_6",
-            "accuracy": "active_step_7",
-            "polish": "active_step_8"
+            "stock_brain": "active",
+            "item_market": "active",
+            "travel_profit": "active",
+            "lite_focus": "active_step_9"
         },
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
@@ -3047,7 +3117,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "8.11-login-stockfix",
+        "step": "9.0-lite-focus",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -3076,7 +3146,7 @@ def dashboard():
 def get_settings():
     defaults = {
         "scan_interval_minutes": "15",
-        "stock_pick_change_score_gap": "15",
+        "stock_pick_change_score_gap": "6",
         "enemy_tracking_window_hours": "72",
         "enemy_alerts_enabled": "true",
         "alerts_enabled": "true",
@@ -3245,11 +3315,30 @@ def stocks_brain():
             """
         ).fetchall()
         count = conn.execute("SELECT COUNT(*) AS c FROM stock_snapshots").fetchone()["c"]
-    ranked = []
+    ranked_all = []
     for r in recent:
-        ranked.append(score_stock(dict(r) | {"stock_id": r["acronym"], "market_cap": None, "total_shares": None}))
-    ranked = sorted(ranked, key=lambda x: x["score"], reverse=True)[:10]
-    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "server_time": now_iso()})
+        ranked_all.append(score_stock(dict(r) | {"stock_id": r["acronym"], "market_cap": None, "total_shares": None}))
+    ranked_all = sorted(ranked_all, key=lambda x: x["score"], reverse=True)
+    ranked = ranked_all[:10]
+    live_pick = None
+    if pick:
+        for row in ranked_all:
+            if row.get("acronym") == pick.get("acronym"):
+                live_pick = row
+                break
+    diagnostics = None
+    if pick and ranked_all:
+        age_hours = _parse_iso_age_hours(pick.get("created_at"))
+        best = ranked_all[0]
+        diagnostics = {
+            "pick_age_hours": round(age_hours, 2),
+            "active_pick_saved_score": pick.get("score"),
+            "active_pick_live_score": live_pick.get("score") if live_pick else None,
+            "best_live_acronym": best.get("acronym"),
+            "best_live_score": best.get("score"),
+            "note": "The pick now compares live scores and refreshes every 24h, so it will not stay stuck on an old saved score."
+        }
+    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "diagnostics": diagnostics, "server_time": now_iso()})
 
 
 @app.get("/api/stocks/predictions")
