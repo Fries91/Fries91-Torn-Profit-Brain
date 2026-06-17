@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.8.11-login-stockfix
-// @description  Self-learning Torn profit and war intel app. Step 8.11: limited key login fallback, stock scan PostgreSQL fix, smaller floating AI icon, and PDA fixes.
+// @version      1.9.0-lite-focus
+// @description  Lite self-learning Torn profit app. Step 9: focused Stock, Item Market, and Travel Profit with smoother PDA UI.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -26,12 +26,12 @@
   const K_APIKEY = 'fries91_torn_brain_api_key_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
   const K_ICON_POS = 'fries91_torn_brain_icon_pos_v2';
-    const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Points Watcher', 'Enemy Sleep', 'Notifications', 'Accuracy', 'Settings'];
+    const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Settings'];
 
   let state = null;
   let dashboard = null;
   let activeTab = GM_getValue('fries91_torn_brain_tab_v1', 'Overview');
-  if (activeTab === 'Alerts') activeTab = 'Notifications';
+  if (activeTab === 'Alerts' || activeTab === 'Notifications' || activeTab === 'Points Watcher' || activeTab === 'Enemy Sleep' || activeTab === 'Accuracy') activeTab = 'Overview';
   let mounted = false;
   let refreshTimer = null;
   let refreshBusy = false;
@@ -337,6 +337,17 @@
       .tb-title { font-size: 14px; }
       #tb-icon { bottom: 72px; left: 14px; width: 34px; height: 34px; font-size: 15px; }
     }
+
+    /* Step 9 Lite Focus: performance-first overrides */
+    #tb-panel, #tb-icon, .tb-card, .tb-head, .tb-tabs, .tb-tab, .tb-btn, .tb-close { animation: none !important; transition: none !important; }
+    #tb-panel:before, .tb-head:after, .tb-scan:after { display: none !important; }
+    #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: rgba(5,10,7,.98) !important; }
+    .tb-card { box-shadow: none !important; }
+    .tb-scan { background: rgba(20,83,45,.16) !important; }
+    #tb-icon { width: 32px !important; height: 32px !important; min-width: 32px !important; padding: 0 !important; font-size: 13px !important; border-radius: 11px !important; box-shadow: 0 3px 10px rgba(0,0,0,.65), 0 0 10px rgba(34,197,94,.34) !important; }
+    #tb-icon:before { display:none !important; }
+    .tb-tabs { padding: 6px !important; }
+    .tb-tab { padding: 7px 10px !important; }
   `);
 
   function token() {
@@ -511,7 +522,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Step 8.11 Fix</span><span class="tb-subtitle">Self-Learning Profit Engine</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -608,9 +619,9 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Step 8.11 Includes</h3>
-        <div class="tb-muted">Quiet notification mode, Notifications tab count only, smaller floating movable AI🫰 icon, item price fallback fix, auto re-login, swipe-safe tabs, PostgreSQL storage, backend-first dashboard, Stock Brain, Item Market, Points Watcher, Travel Profit, Enemy Sleep, and Accuracy Learning.</div>
-        <div class="tb-scan">Stock + Item + Points + Travel + Enemy watcher active · backend scanning online</div>
+        <h3>Lite Focus Includes</h3>
+        <div class="tb-muted">Lite mode: fewer animations, smaller floating movable AI🫰 icon, backend-first display, and only Stock Brain, Item Market, and Travel Profit prediction.</div>
+        <div class="tb-scan">Stock + Item + Travel watcher active · smoother lite backend scanning</div>
       </div>
     `;
   }
@@ -626,10 +637,7 @@
       const auto = dashboard.auto_scan || state.auto_scan || {};
       const best = dashboard.best_move || {};
       const stock = dashboard.stock_pick || {};
-      const points = dashboard.points || {};
       const travel = dashboard.travel_best || {};
-      const enemyReport = dashboard.enemy?.report || {};
-      const enemySession = dashboard.enemy?.session || {};
       const items = dashboard.items || [];
       const alerts = dashboard.latest_alerts || [];
       body.innerHTML = `
@@ -646,9 +654,9 @@
         </div>
         <div class="tb-kpi-grid">
           ${kpi('Stock Pick', stock.acronym || 'Learning', stock.confidence ? 'Confidence ' + Number(stock.confidence).toFixed(0) + '%' : 'Need snapshots')}
-          ${kpi('Points', points.signal || 'WAITING', points.latest?.lowest_price ? fmtMoney(points.latest.lowest_price) : 'Need scan')}
+          ${kpi('Item Market', (items[0] && items[0].name) || 'Watching', items[0] ? ((items[0].signal || 'WATCH') + ' · ' + (items[0].latest?.lowest_price ? fmtMoney(items[0].latest.lowest_price) : 'learning')) : 'Add watched items')}
           ${kpi('Travel', travel.signal || 'WAITING', travel.country ? travel.country + ' · ' + travel.item_name : 'Need route data')}
-          ${kpi('Enemy', enemySession.enemy_faction_name || 'Not tracking', enemyReport.best_attack_window || 'Start during war')}
+          ${kpi('Alerts', String(dashboard.unread_alerts || 0), 'Quiet signals only')}
         </div>
         <div class="tb-card">
           <h3>Quick Market Watch</h3>
@@ -657,15 +665,17 @@
           </div>
         </div>
         <div class="tb-card">
-          <h3>Notifications</h3>
-          <div class="tb-muted">Quiet mode is on. Alerts stay inside the Notifications tab only. Open the overlay and use the Notifications tab number to see unread alerts.</div>
-          <div class="tb-scan">Unread notifications: ${escapeHtml(dashboard.unread_alerts || 0)}</div>
+          <h3>Quiet Signals</h3>
+          <div class="tb-muted">No popups. This lite version keeps market signals inside the overlay so it opens smoother.</div>
+          <div class="tb-compact-list">
+            ${(alerts || []).slice(0,3).map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span></div>`).join('') || '<div class="tb-muted">No stock, item, or travel signals yet.</div>'}
+          </div>
         </div>
         <div class="tb-card">
           <h3>Status</h3>
           <div class="tb-grid">
             <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-            <div><span class="tb-pill">Notifications</span><br>${escapeHtml(dashboard.unread_alerts || 0)} unread</div>
+            <div><span class="tb-pill">Signals</span><br>${escapeHtml(dashboard.unread_alerts || 0)} saved</div>
             <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
             <div><span class="tb-pill">Server</span><br>${escapeHtml(shortTime(dashboard.server_time))}</div>
           </div>
@@ -688,11 +698,11 @@
         <h3>Overview</h3>
         <div class="tb-grid">
           <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-          <div><span class="tb-pill">Notifications</span><br>${escapeHtml(state.unread_alerts || 0)} unread</div>
+          <div><span class="tb-pill">Signals</span><br>${escapeHtml(state.unread_alerts || 0)} saved</div>
           <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
           <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(shortTime(auto.last_scan_at))}</div>
         </div>
-        <div class="tb-scan">AI learning engine online · backend-first Step 8 smooth mode</div>
+        <div class="tb-scan">Lite prediction engine online · backend-first smooth mode</div>
       </div>`;
   }
 
@@ -771,27 +781,15 @@
           <div class="tb-actions"><button class="tb-btn tb-danger" id="tb-logout">Logout</button></div>
         </div>
         <div class="tb-card">
-          <h3>Scan Settings</h3>
+          <h3>Lite Scan Settings</h3>
           <label class="tb-muted">Scan interval minutes</label>
-          <input class="tb-input" id="set-scan" value="${escapeHtml(s.scan_interval_minutes)}">
+          <input class="tb-input" id="set-scan" value="${escapeHtml(s.scan_interval_minutes || '15')}">
           <label class="tb-muted">Stock pick change score gap</label>
-          <input class="tb-input" id="set-gap" value="${escapeHtml(s.stock_pick_change_score_gap)}">
-          <label class="tb-muted">Enemy tracking window hours</label>
-          <input class="tb-input" id="set-enemy" value="${escapeHtml(s.enemy_tracking_window_hours)}">
-          <label class="tb-muted">Enemy window alerts enabled</label>
-          <select class="tb-select" id="set-enemy-alerts">
-            <option value="true" ${s.enemy_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
-            <option value="false" ${s.enemy_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
-          </select>
+          <input class="tb-input" id="set-gap" value="${escapeHtml(s.stock_pick_change_score_gap || '6')}">
           <label class="tb-muted">Auto backend scanning</label>
           <select class="tb-select" id="set-auto">
             <option value="true" ${s.auto_scan_enabled === 'true' ? 'selected' : ''}>true</option>
             <option value="false" ${s.auto_scan_enabled === 'false' ? 'selected' : ''}>false</option>
-          </select>
-          <label class="tb-muted">Notifications enabled</label>
-          <select class="tb-select" id="set-alerts">
-            <option value="true" ${s.alerts_enabled === 'true' ? 'selected' : ''}>true</option>
-            <option value="false" ${s.alerts_enabled === 'false' ? 'selected' : ''}>false</option>
           </select>
           <label class="tb-muted">Share market learning data</label>
           <select class="tb-select" id="set-share">
@@ -803,22 +801,9 @@
             <option value="true" ${s.item_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
             <option value="false" ${s.item_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
           </select>
-          <label class="tb-muted">Default item buy discount %</label>
-          <input class="tb-input" id="set-item-buy-discount" value="${escapeHtml(s.item_default_buy_discount_pct || '3')}">
-          <label class="tb-muted">Default item sell markup %</label>
-          <input class="tb-input" id="set-item-sell-markup" value="${escapeHtml(s.item_default_sell_markup_pct || '6')}">
-          <label class="tb-muted">Points alerts enabled</label>
-          <select class="tb-select" id="set-points-alerts">
-            <option value="true" ${s.points_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
-            <option value="false" ${s.points_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
-          </select>
           <div class="tb-grid">
-            <input class="tb-input" id="set-points-buy-zone" placeholder="Points buy zone optional" value="${escapeHtml(s.points_buy_zone || '')}">
-            <input class="tb-input" id="set-points-sell-zone" placeholder="Points sell zone optional" value="${escapeHtml(s.points_sell_zone || '')}">
-          </div>
-          <div class="tb-grid">
-            <input class="tb-input" id="set-points-buy-discount" placeholder="Auto buy discount %" value="${escapeHtml(s.points_default_buy_discount_pct || '2')}">
-            <input class="tb-input" id="set-points-sell-markup" placeholder="Auto sell markup %" value="${escapeHtml(s.points_default_sell_markup_pct || '4')}">
+            <input class="tb-input" id="set-item-buy-discount" placeholder="Default item buy discount %" value="${escapeHtml(s.item_default_buy_discount_pct || '3')}">
+            <input class="tb-input" id="set-item-sell-markup" placeholder="Default item sell markup %" value="${escapeHtml(s.item_default_sell_markup_pct || '6')}">
           </div>
           <label class="tb-muted">Travel alerts enabled</label>
           <select class="tb-select" id="set-travel-alerts">
@@ -855,23 +840,22 @@
         method: 'POST',
         body: JSON.stringify({
           scan_interval_minutes: el('set-scan')?.value || '15',
-          stock_pick_change_score_gap: el('set-gap')?.value || '15',
-          enemy_tracking_window_hours: el('set-enemy')?.value || '72',
-          enemy_alerts_enabled: el('set-enemy-alerts')?.value || 'true',
-          alerts_enabled: el('set-alerts')?.value || 'true',
+          stock_pick_change_score_gap: el('set-gap')?.value || '6',
+          auto_scan_enabled: el('set-auto')?.value || 'true',
           share_market_learning: el('set-share')?.value || 'true',
           item_alerts_enabled: el('set-item-alerts')?.value || 'true',
           item_default_buy_discount_pct: el('set-item-buy-discount')?.value || '3',
           item_default_sell_markup_pct: el('set-item-sell-markup')?.value || '6',
-          points_alerts_enabled: el('set-points-alerts')?.value || 'true',
-          points_buy_zone: el('set-points-buy-zone')?.value || '',
-          points_sell_zone: el('set-points-sell-zone')?.value || '',
-          points_default_buy_discount_pct: el('set-points-buy-discount')?.value || '2',
-          points_default_sell_markup_pct: el('set-points-sell-markup')?.value || '4',
-          auto_scan_enabled: el('set-auto')?.value || 'true'
+          travel_alerts_enabled: el('set-travel-alerts')?.value || 'true',
+          travel_min_profit: el('set-travel-min-profit')?.value || '50000',
+          travel_min_arrival_chance: el('set-travel-min-chance')?.value || '45',
+          travel_items_per_trip: el('set-travel-items')?.value || '29',
+          // keep unused modules quiet on the backend
+          points_alerts_enabled: 'false',
+          enemy_alerts_enabled: 'false'
         })
       });
-      msg.innerHTML = '<span class="tb-ok">Saved.</span>';
+      msg.innerHTML = '<span class="tb-ok">Saved lite settings.</span>';
     } catch (e) {
       msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
     }
