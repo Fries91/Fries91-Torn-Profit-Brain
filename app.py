@@ -29,6 +29,7 @@ from functools import wraps
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 
 APP_SECRET = os.environ.get("APP_SECRET", "dev-change-me")
@@ -40,6 +41,18 @@ KEY_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+
+@app.errorhandler(HTTPException)
+def _tb_http_error(e):
+    # Always return JSON so TornPDA/userscript never sees an HTML error page.
+    return jsonify({"ok": False, "error": getattr(e, "description", str(e)), "status": getattr(e, "code", 500), "step": "10.12-server-json-fix"}), getattr(e, "code", 500)
+
+
+@app.errorhandler(Exception)
+def _tb_unhandled_error(e):
+    # Keep the overlay readable if Render hits a backend exception.
+    return jsonify({"ok": False, "error": "Backend error: " + str(e), "step": "10.12-server-json-fix"}), 500
 
 
 def now_iso():
@@ -3921,6 +3934,10 @@ def accuracy_dashboard(torn_id: int):
 def require_auth(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        try:
+            ensure_runtime_migrations()
+        except Exception:
+            pass
         auth = request.headers.get("Authorization", "")
         token = auth.replace("Bearer ", "", 1).strip()
         if not token:
@@ -3950,7 +3967,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.9-item-buy-popup",
+        "step": "10.12-server-json-fix",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3959,7 +3976,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.11-stock-pattern-engine", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.12-server-json-fix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -4070,7 +4087,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.9-item-buy-popup",
+        "step": "10.12-server-json-fix",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -4079,7 +4096,7 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_10_9"
+            "lite_focus": "active_step_10_12"
         },
         "unread_alerts": unread,
         "item_popup_enabled": item_popup_enabled,
@@ -4109,14 +4126,23 @@ def dashboard():
             (torn_id,),
         ).fetchone()
 
-    stock = latest_active_stock_pick()
-    stock_move = stock_move_status(torn_id)
-    items = latest_item_market_rows(torn_id)[:5]
-    points = latest_points_market(torn_id)
-    travel = latest_travel_profit(torn_id)
-    enemy = latest_enemy_activity(torn_id)
+    dashboard_warnings = []
+    def _safe(label, fallback, fn, *args, **kwargs):
+        try:
+            val = fn(*args, **kwargs)
+            return fallback if val is None else val
+        except Exception as ex:
+            dashboard_warnings.append(f"{label}: {ex}")
+            return fallback
 
-    stock_learning = stock_learning_summary(torn_id)
+    stock = _safe("stock pick", None, latest_active_stock_pick)
+    stock_move = _safe("stock move", {"status":"learning", "message":"Waiting for stock timer data."}, stock_move_status, torn_id)
+    items = _safe("items", [], latest_item_market_rows, torn_id)[:5]
+    points = _safe("points", {"latest": None, "signal": "WAITING", "buy_zone": 0.0, "sell_zone": 0.0, "link": "https://www.torn.com/pmarket.php"}, latest_points_market, torn_id)
+    travel = _safe("travel", {"best": None, "snapshot_count": 0}, latest_travel_profit, torn_id)
+    enemy = _safe("enemy", {"session": None, "report": None}, latest_enemy_activity, torn_id)
+
+    stock_learning = _safe("stock learning", {"global_results_checked":0, "user_stock_snapshots":0}, stock_learning_summary, torn_id)
     stock_samples = int(stock_learning.get("global_results_checked") or 0) + int(stock_learning.get("user_stock_snapshots") or 0)
     item_samples = sum(int((x.get("stats") or {}).get("count7") or 0) for x in items) if isinstance(items, list) else 0
     travel_samples = int((travel or {}).get("snapshot_count") or 0) if isinstance(travel, dict) else 0
@@ -4158,7 +4184,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.9-item-buy-popup",
+        "step": "10.12-server-json-fix",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -4184,6 +4210,7 @@ def dashboard():
             "report": enemy.get("report"),
         },
         "latest_alerts": [dict(r) for r in latest_alerts],
+        "dashboard_warnings": dashboard_warnings if 'dashboard_warnings' in locals() else [],
     })
 
 
