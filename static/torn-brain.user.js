@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.3-schemafix
-// @description  Lite self-learning Torn profit app. Step 10.3: focused Stock, Item, Travel plus runtime database schema fix.
+// @version      1.10.4-brainstrength
+// @description  Lite self-learning Torn profit app. Step 10.5: adds Brain Strength status bar and focused Stock, Item, Travel prediction.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -321,6 +321,14 @@
     .tb-kpi small { display:block; color:#86efac; font-weight:900; font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
     .tb-kpi strong { display:block; color:#fef9c3; font-size:15px; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tb-kpi span { display:block; color:#c9d7bd; font-size:11px; margin-top:3px; }
+    .tb-brain-strength { border:1px solid rgba(250,204,21,.55); border-radius:16px; padding:11px; margin-bottom:10px; background:linear-gradient(180deg, rgba(20,83,45,.32), rgba(2,6,4,.72)); box-shadow:0 0 18px rgba(34,197,94,.10); }
+    .tb-brain-top { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+    .tb-brain-title { color:#fef08a; font-size:14px; font-weight:1000; }
+    .tb-brain-score { color:#86efac; font-size:18px; font-weight:1000; text-shadow:0 0 10px rgba(34,197,94,.28); }
+    .tb-brain-track { height:12px; border-radius:999px; background:rgba(0,0,0,.38); border:1px solid rgba(74,222,128,.18); overflow:hidden; }
+    .tb-brain-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e, #facc15); }
+    .tb-brain-meta { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; font-size:10px; color:#c9d7bd; }
+    .tb-brain-meta b { color:#fef9c3; display:block; font-size:12px; }
     .tb-compact-list { display:grid; gap:7px; }
     .tb-compact-row { border:1px solid rgba(74,222,128,.12); border-radius:12px; padding:8px; background:rgba(0,0,0,.18); font-size:12px; }
     .tb-refresh-line { font-size:10px; color:#86efac; margin-top:7px; }
@@ -673,6 +681,10 @@
       const items = dashboard.items || [];
       const health = dashboard.health || {};
       const ds = dashboard.data_strength || {};
+      const brain = dashboard.brain_strength || {};
+      const stockMove = dashboard.stock_move || {};
+      const brainScore = Math.max(0, Math.min(100, Number(brain.score || 0)));
+      const brainLabel = brain.label || (brainScore >= 80 ? 'Sharp' : brainScore >= 60 ? 'Strong' : brainScore >= 35 ? 'Growing' : 'Learning');
       const bestItem = items[0] || null;
       const stockStrength = ds.stock || dataStrengthLabel((learn.global_results_checked || 0) + (learn.user_stock_snapshots || 0));
       const itemStrength = ds.item || dataStrengthLabel(bestItem?.stats?.count7 || 0);
@@ -681,8 +693,19 @@
       const itemRisk = bestItem ? riskLabel(bestItem.signal, 70, itemStrength) : 'LEARNING';
       const travelRisk = travel ? riskLabel(travel.signal, travel.arrival_chance, travelStrength) : 'LEARNING';
       body.innerHTML = `
+        <div class="tb-brain-strength">
+          <div class="tb-brain-top"><div class="tb-brain-title">🧠 Brain Strength: ${escapeHtml(brainLabel)}</div><div class="tb-brain-score">${brainScore.toFixed(0)}%</div></div>
+          <div class="tb-brain-track"><div class="tb-brain-fill" style="width:${brainScore.toFixed(0)}%"></div></div>
+          <div class="tb-brain-meta">
+            <div><b>${fmtInt(brain.total_samples || 0)}</b>samples</div>
+            <div><b>${brain.global_win_rate == null ? '—' : Number(brain.global_win_rate).toFixed(1) + '%'}</b>accuracy</div>
+            <div><b>${fmtInt(brain.users_contributing || 0)}</b>users</div>
+          </div>
+          <div class="tb-muted" style="margin-top:7px;">${escapeHtml(brain.reason || 'Learning from stock, item, and travel history.')}</div>
+        </div>
+        ${stockMoveCard(stockMove, true)}
         <div class="tb-card tb-dashboard-card">
-          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.3 Smooth</span></h3>
+          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.5 Timer</span></h3>
           <div class="tb-muted">Focused on Stock, Item Market, and Travel Profit only. Backend does the watching so PDA stays smooth.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-quick-setup">Quick Setup</button>
@@ -700,7 +723,8 @@
           stock.acronym ? 'Stock uses live score, 24h/7d ranges, global prediction outcomes, and your private stock history when available.' : 'Stock Brain needs snapshots before it can choose strongly.',
           bestItem ? 'Item Market compares current price to learned buy/sell zones and recent movement.' : 'Quick Setup adds popular watched items so item predictions can start.',
           travel?.country ? 'Travel ranks routes by estimated profit, travel time, and arrival chance.' : 'Travel Profit improves after item and route snapshots build.',
-          'Data Strength tells users how much history is behind the prediction.'
+          'Brain Strength combines information volume, checked accuracy, active backend health, and balance across Stock/Items/Travel.',
+          'Data Strength tells users how much history is behind each prediction.'
         ])}
         <div class="tb-card">
           <h3>Scan Health</h3>
@@ -715,6 +739,7 @@
       `;
       el('tb-overview-refresh')?.addEventListener('click', () => renderOverviewLive());
       el('tb-quick-setup')?.addEventListener('click', quickSetup);
+      el('tb-stock-reviewed')?.addEventListener('click', resetStockTimer);
       await refreshState(true);
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Overview</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-muted">The backend may be waking up. Try refresh again after Render responds.</div></div>`;
@@ -942,6 +967,42 @@
     return Math.round(v).toLocaleString();
   }
 
+
+  function stockMoveCard(move, compact=false) {
+    move = move || {};
+    const due = !!move.due;
+    const rec = move.recommendation || (due ? 'REVIEW' : 'WAIT');
+    const title = move.title || 'Stock 24h Timer';
+    const msg = move.message || 'The app will tell you when the 24h review is due.';
+    const from = move.from_acronym || 'Learning';
+    const best = move.best_acronym || 'Learning';
+    const cls = due ? 'tb-warn' : 'tb-ok';
+    return `
+      <div class="tb-card ${due ? 'tb-dashboard-card' : ''}">
+        <h3>⏰ ${escapeHtml(title)} <span class="tb-pill ${due ? 'tb-ai-pill' : ''}">${escapeHtml(rec)}</span></h3>
+        <div class="tb-muted">${escapeHtml(msg)}</div>
+        <div class="tb-grid" style="margin-top:8px;">
+          <div><span class="tb-pill">Current Pick</span><br><b>${escapeHtml(from)}</b></div>
+          <div><span class="tb-pill">Best Now</span><br><b>${escapeHtml(best)}</b></div>
+          <div><span class="tb-pill">Time Left</span><br><span class="${cls}">${move.due ? 'Due now' : (Number(move.hours_left || 0).toFixed(1) + 'h')}</span></div>
+          <div><span class="tb-pill">Score Gap</span><br>${escapeHtml(move.score_gap ?? '—')}</div>
+        </div>
+        <div class="tb-actions">
+          ${move.link ? `<a class="tb-btn" href="${escapeHtml(move.link)}">Open Stocks</a>` : ''}
+          <button class="tb-btn" id="tb-stock-reviewed">Reset 24h Timer</button>
+        </div>
+      </div>`;
+  }
+
+  async function resetStockTimer() {
+    try {
+      await api('/api/stocks/reviewed', { method:'POST', body:'{}' });
+      if (activeTab === 'Stock Brain') renderStockBrain(); else renderOverviewLive();
+    } catch (e) {
+      alert('Could not reset stock timer: ' + e.message);
+    }
+  }
+
   function shortTime(s) {
     if (!s) return 'waiting';
     return String(s).replace('T', ' ').replace('+00:00', '');
@@ -965,6 +1026,7 @@
       const p = data.pick;
       const ranked = data.ranked || [];
       const learn = data.stock_learning || {};
+      const stockMove = data.stock_move || {};
       body.innerHTML = `
         <div class="tb-card">
           <h3>Stock Brain <span class="tb-pill tb-ai-pill">User Friendly</span></h3>
@@ -976,6 +1038,7 @@
           </div>
           <div class="tb-muted" id="tb-stock-msg">Snapshots stored: ${escapeHtml(data.snapshot_count || 0)}</div>
         </div>
+        ${stockMoveCard(stockMove)}
         <div class="tb-card">
           <h3>Learning Used In Predictions</h3>
           <div class="tb-grid">
@@ -1037,6 +1100,7 @@
       el('tb-auto-start')?.addEventListener('click', startAutoWatcher);
       el('tb-scan-stocks')?.addEventListener('click', scanStocksNow);
       el('tb-stock-history')?.addEventListener('click', renderStockHistory);
+      el('tb-stock-reviewed')?.addEventListener('click', resetStockTimer);
       bindFeedbackButtons();
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Stock Brain</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-actions"><button class="tb-btn" id="tb-scan-stocks">Try Scan</button></div></div>`;
