@@ -919,6 +919,27 @@ def init_step_10_2_db():
         );
         CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
             ON prediction_feedback(module, created_at);
+
+
+            CREATE TABLE IF NOT EXISTS stock_move_watches (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                from_acronym TEXT NOT NULL,
+                from_name TEXT,
+                from_price REAL,
+                to_acronym TEXT,
+                to_name TEXT,
+                to_price REAL,
+                status TEXT NOT NULL DEFAULT 'active',
+                reason TEXT,
+                created_at TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                notified_at TEXT,
+                reviewed_at TEXT,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_stock_move_watches_user_status
+                ON stock_move_watches(torn_id, status, due_at);
         """
     else:
         script = """
@@ -934,6 +955,27 @@ def init_step_10_2_db():
         );
         CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
             ON prediction_feedback(module, created_at);
+
+
+            CREATE TABLE IF NOT EXISTS stock_move_watches (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                from_acronym TEXT NOT NULL,
+                from_name TEXT,
+                from_price REAL,
+                to_acronym TEXT,
+                to_name TEXT,
+                to_price REAL,
+                status TEXT NOT NULL DEFAULT 'active',
+                reason TEXT,
+                created_at TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                notified_at TEXT,
+                reviewed_at TEXT,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_stock_move_watches_user_status
+                ON stock_move_watches(torn_id, status, due_at);
         """
     with db() as conn:
         conn.executescript(script)
@@ -1381,6 +1423,112 @@ def stock_learning_summary(torn_id: int):
         "shared_note": "Global prediction outcomes help everyone. Personal holdings stay private and only adjust that user's scoring unless converted into anonymous aggregated results.",
     }
 
+
+
+def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int, travel_samples: int, auto=None):
+    """Overall visible brain strength for the Overview page.
+    This is not a guarantee of profit. It shows how much history + checked accuracy
+    + backend health the prediction brain currently has.
+    """
+    try:
+        stock_samples = int(stock_learning.get("global_results_checked") or 0) + int(stock_learning.get("user_stock_snapshots") or 0)
+    except Exception:
+        stock_samples = 0
+    try:
+        item_samples = int(item_samples or 0)
+    except Exception:
+        item_samples = 0
+    try:
+        travel_samples = int(travel_samples or 0)
+    except Exception:
+        travel_samples = 0
+
+    total_samples = stock_samples + item_samples + travel_samples
+    # Data score ramps up as real observations build. 2,000+ combined observations is considered strong.
+    info_score = min(100.0, (total_samples / 2000.0) * 100.0)
+
+    win_rate = stock_learning.get("global_win_rate")
+    if win_rate is None:
+        accuracy_score = 35.0 if total_samples else 15.0
+    else:
+        # 50% win rate is neutral, 70%+ is excellent. Clamp so early noise doesn't overpromise.
+        try:
+            wr = float(win_rate)
+        except Exception:
+            wr = 0.0
+        accuracy_score = max(20.0, min(100.0, 50.0 + ((wr - 50.0) * 1.7)))
+
+    if auto and int(auto["last_ok"] or 0) == 1:
+        health_score = 100.0
+    elif auto:
+        health_score = 60.0
+    else:
+        health_score = 35.0
+
+    module_count = 0
+    if stock_samples > 0:
+        module_count += 1
+    if item_samples > 0:
+        module_count += 1
+    if travel_samples > 0:
+        module_count += 1
+    balance_score = (module_count / 3.0) * 100.0
+
+    score = (info_score * 0.42) + (accuracy_score * 0.33) + (health_score * 0.15) + (balance_score * 0.10)
+    score = round(max(0.0, min(100.0, score)), 1)
+    if score >= 80:
+        label = "Sharp"
+    elif score >= 60:
+        label = "Strong"
+    elif score >= 35:
+        label = "Growing"
+    else:
+        label = "Learning"
+
+    try:
+        with db() as conn:
+            user_rows = conn.execute(
+                """
+                SELECT COUNT(DISTINCT uid) AS c FROM (
+                    SELECT captured_by_torn_id AS uid FROM stock_snapshots WHERE captured_by_torn_id IS NOT NULL
+                    UNION SELECT captured_by_torn_id AS uid FROM item_market_snapshots WHERE captured_by_torn_id IS NOT NULL
+                    UNION SELECT captured_by_torn_id AS uid FROM travel_route_snapshots WHERE captured_by_torn_id IS NOT NULL
+                ) x
+                """
+            ).fetchone()
+        users_contributing = int(user_rows["c"] or 0) if user_rows else 0
+    except Exception:
+        users_contributing = 0
+
+    reasons = []
+    if total_samples < 80:
+        reasons.append("Needs more saved snapshots to become reliable")
+    elif total_samples < 500:
+        reasons.append("Has early learning data, but still improving")
+    else:
+        reasons.append("Has a growing history of saved market observations")
+    if win_rate is not None:
+        reasons.append(f"Global stock win rate is {float(win_rate):.1f}%")
+    if auto and int(auto["last_ok"] or 0) == 1:
+        reasons.append("Backend watcher is online")
+    else:
+        reasons.append("Backend watcher needs a clean scan")
+
+    return {
+        "score": score,
+        "label": label,
+        "info_score": round(info_score, 1),
+        "accuracy_score": round(accuracy_score, 1),
+        "health_score": round(health_score, 1),
+        "balance_score": round(balance_score, 1),
+        "total_samples": total_samples,
+        "stock_samples": stock_samples,
+        "item_samples": item_samples,
+        "travel_samples": travel_samples,
+        "users_contributing": users_contributing,
+        "global_win_rate": win_rate,
+        "reason": " · ".join(reasons),
+    }
 
 def stock_stats(acronym: str, current_price: float):
     since_24 = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
@@ -2912,6 +3060,136 @@ def record_scan_run(torn_id: int, status: str, rows_seen: int, message: str, sta
         )
 
 
+
+def _stock_pick_due_at(created_at: str):
+    base = iso_to_dt(created_at) or datetime.now(timezone.utc)
+    return (base + timedelta(hours=24)).replace(microsecond=0).isoformat()
+
+
+def latest_stock_rows():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT acronym, name, current_price, created_at
+            FROM stock_snapshots
+            WHERE id IN (SELECT MAX(id) FROM stock_snapshots GROUP BY acronym)
+            ORDER BY acronym ASC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ensure_stock_move_watch(torn_id: int, pick=None):
+    """Create a private 24h review timer for the user's current stock pick.
+    This does not move money or buy/sell anything; it only tells the user when to review.
+    """
+    if not pick:
+        pick = latest_active_stock_pick()
+    if not pick or not pick.get("acronym"):
+        return None
+    now = now_iso()
+    due_at = _stock_pick_due_at(pick.get("created_at") or now)
+    with db() as conn:
+        active = conn.execute(
+            "SELECT * FROM stock_move_watches WHERE torn_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (torn_id,),
+        ).fetchone()
+        if active and str(active["from_acronym"]).upper() == str(pick.get("acronym")).upper():
+            return dict(active)
+        if active:
+            conn.execute("UPDATE stock_move_watches SET status='replaced', reviewed_at=? WHERE id=?", (now, active["id"]))
+        conn.execute(
+            """
+            INSERT INTO stock_move_watches(torn_id, from_acronym, from_name, from_price, status, reason, created_at, due_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (torn_id, pick.get("acronym"), pick.get("name"), pick.get("pick_price"), "active", "24h stock review timer started from current pick.", now, due_at),
+        )
+        row = conn.execute(
+            "SELECT * FROM stock_move_watches WHERE torn_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (torn_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def stock_move_status(torn_id: int, ranked_all=None):
+    """Return a clear hold/move/review recommendation for the user's 24h stock timer."""
+    pick = latest_active_stock_pick()
+    watch = ensure_stock_move_watch(torn_id, pick)
+    if not watch:
+        return {"status": "learning", "title": "Stock timer waiting", "message": "Run Stock Brain once to start a 24h review timer.", "due": False}
+    if ranked_all is None:
+        rows = latest_stock_rows()
+        ranked_all = sorted([
+            score_stock(dict(r) | {"stock_id": r.get("acronym"), "market_cap": None, "total_shares": None}, torn_id)
+            for r in rows
+        ], key=lambda x: x["score"], reverse=True)
+    now_dt = datetime.now(timezone.utc)
+    due_dt = iso_to_dt(watch.get("due_at")) or now_dt
+    seconds_left = int((due_dt - now_dt).total_seconds())
+    hours_left = max(0, seconds_left / 3600.0)
+    from_acr = str(watch.get("from_acronym") or "").upper()
+    current_row = None
+    best = ranked_all[0] if ranked_all else None
+    for row in ranked_all or []:
+        if str(row.get("acronym") or "").upper() == from_acr:
+            current_row = row
+            break
+    current_score = float((current_row or {}).get("score") or 0)
+    best_score = float((best or {}).get("score") or 0)
+    score_gap = max(0.0, best_score - current_score)
+    due = seconds_left <= 0
+    recommendation = "WAIT"
+    title = "24h timer running"
+    message = f"Review {from_acr} in {hours_left:.1f}h."
+    if due:
+        if best and str(best.get("acronym") or "").upper() != from_acr and score_gap >= 6:
+            recommendation = "MOVE"
+            title = "Move money review due"
+            message = f"24h is up. {best.get('acronym')} is stronger than {from_acr} by {score_gap:.1f} score points. Consider moving money if this matches your plan."
+        elif current_row:
+            recommendation = "REVIEW"
+            title = "24h stock review due"
+            message = f"24h is up. {from_acr} is still close enough to the best live score. Review profit/loss and decide hold or sell."
+        else:
+            recommendation = "REVIEW"
+            title = "24h stock review due"
+            message = f"24h is up. Review {from_acr} and compare against the current best pick."
+        if not watch.get("notified_at"):
+            with db() as conn:
+                conn.execute("UPDATE stock_move_watches SET notified_at=? WHERE id=?", (now_iso(), watch["id"]))
+                conn.execute(
+                    "INSERT INTO alerts(torn_id, alert_type, title, body, link, created_at) VALUES(?,?,?,?,?,?)",
+                    (torn_id, "stock_24h_review", title, message, "https://www.torn.com/page.php?sid=stocks", now_iso()),
+                )
+    return {
+        "status": recommendation.lower(),
+        "recommendation": recommendation,
+        "title": title,
+        "message": message,
+        "due": bool(due),
+        "hours_left": round(hours_left, 2),
+        "due_at": watch.get("due_at"),
+        "started_at": watch.get("created_at"),
+        "from_acronym": from_acr,
+        "from_name": watch.get("from_name"),
+        "from_price": watch.get("from_price"),
+        "current_score": round(current_score, 2),
+        "best_acronym": (best or {}).get("acronym"),
+        "best_name": (best or {}).get("name"),
+        "best_score": round(best_score, 2),
+        "score_gap": round(score_gap, 2),
+        "link": "https://www.torn.com/page.php?sid=stocks",
+    }
+
+
+def reset_stock_move_timer(torn_id: int):
+    pick = latest_active_stock_pick()
+    now = now_iso()
+    with db() as conn:
+        conn.execute("UPDATE stock_move_watches SET status='reviewed', reviewed_at=? WHERE torn_id=? AND status='active'", (now, torn_id))
+    return ensure_stock_move_watch(torn_id, pick)
+
 def perform_stock_scan_for_user(torn_id: int, reason: str = "auto"):
     started = now_iso()
     rows_seen = 0
@@ -2928,7 +3206,12 @@ def perform_stock_scan_for_user(torn_id: int, reason: str = "auto"):
         holdings = fetch_user_stock_holdings(key, market_lookup)
         holdings_seen = save_user_stock_holding_snapshots(torn_id, holdings)
         result = choose_stock_pick(torn_id, stocks)
+        ensure_stock_move_watch(torn_id, result.get("pick"))
+        move_status = stock_move_status(torn_id, result.get("ranked") or [])
+        result["move_status"] = move_status
         message = "Auto scan complete. " + str(result.get("decision") or "")
+        if move_status.get("due"):
+            message += " 24h stock review is due."
         if holdings_seen:
             message += f" User stock history captured: {holdings_seen}."
         if result.get("changed"):
@@ -3379,7 +3662,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.3-schemafix",
+        "step": "10.4-brain-strength",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3388,7 +3671,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.3-schemafix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.5-stock-timer", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -3498,7 +3781,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.3-schemafix",
+        "step": "10.4-brain-strength",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -3507,7 +3790,7 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_10_3"
+            "lite_focus": "active_step_10_4"
         },
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
@@ -3537,6 +3820,7 @@ def dashboard():
         ).fetchone()
 
     stock = latest_active_stock_pick()
+    stock_move = stock_move_status(torn_id)
     items = latest_item_market_rows(torn_id)[:5]
     points = latest_points_market(torn_id)
     travel = latest_travel_profit(torn_id)
@@ -3561,6 +3845,7 @@ def dashboard():
         "item_samples": item_samples,
         "travel_samples": travel_samples,
     }
+    brain_strength = brain_strength_summary(torn_id, stock_learning, item_samples, travel_samples, auto)
 
     best_move = {"label": "Learning", "detail": "Waiting for more snapshots", "signal": "WAIT"}
     try:
@@ -3583,16 +3868,18 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.3-schemafix",
+        "step": "10.4-brain-strength",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else None,
         "best_move": best_move,
         "stock_pick": stock,
+        "stock_move": stock_move,
         "stock_learning": stock_learning,
         "health": health,
         "data_strength": data_strength,
+        "brain_strength": brain_strength,
         "items": items,
         "points": {
             "latest": points.get("latest"),
@@ -3913,8 +4200,16 @@ def stocks_brain():
             "best_live_score": best.get("score"),
             "note": "The pick now compares live scores and refreshes every 24h, so it will not stay stuck on an old saved score."
         }
-    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "stock_learning": stock_learning_summary(request.user["torn_id"]), "user_stock_history": [dict(r) for r in user_hist], "diagnostics": diagnostics, "server_time": now_iso()})
+    move_status = stock_move_status(request.user["torn_id"], ranked_all)
+    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "stock_move": move_status, "stock_learning": stock_learning_summary(request.user["torn_id"]), "user_stock_history": [dict(r) for r in user_hist], "diagnostics": diagnostics, "server_time": now_iso()})
 
+
+
+@app.post("/api/stocks/reviewed")
+@require_auth
+def stocks_reviewed():
+    row = reset_stock_move_timer(request.user["torn_id"])
+    return jsonify({"ok": True, "message": "Stock 24h timer reset from the current active pick.", "watch": row, "move_status": stock_move_status(request.user["torn_id"])})
 
 
 @app.get("/api/stocks/user-history")
