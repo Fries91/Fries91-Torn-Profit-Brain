@@ -1028,6 +1028,30 @@ def ensure_runtime_migrations():
             );
             CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
                 ON prediction_feedback(module, created_at);
+
+            CREATE TABLE IF NOT EXISTS stock_pattern_results (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                current_price REAL,
+                pattern_label TEXT,
+                pattern_confidence REAL,
+                pattern_score REAL,
+                support_touches INTEGER DEFAULT 0,
+                trend_1h_pct REAL,
+                trend_6h_pct REAL,
+                trend_24h_pct REAL,
+                trend_7d_pct REAL,
+                position_24h REAL,
+                position_7d REAL,
+                volatility_24h REAL,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stock_pattern_results_acr_time
+                ON stock_pattern_results(acronym, created_at);
             """
         else:
             script = """
@@ -1062,6 +1086,30 @@ def ensure_runtime_migrations():
             );
             CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
                 ON prediction_feedback(module, created_at);
+
+            CREATE TABLE IF NOT EXISTS stock_pattern_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                torn_id INTEGER,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                current_price REAL,
+                pattern_label TEXT,
+                pattern_confidence REAL,
+                pattern_score REAL,
+                support_touches INTEGER DEFAULT 0,
+                trend_1h_pct REAL,
+                trend_6h_pct REAL,
+                trend_24h_pct REAL,
+                trend_7d_pct REAL,
+                position_24h REAL,
+                position_7d REAL,
+                volatility_24h REAL,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stock_pattern_results_acr_time
+                ON stock_pattern_results(acronym, created_at);
             """
         with db() as conn:
             conn.executescript(script)
@@ -1572,83 +1620,246 @@ def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int
         "user_stock_snapshots": user_stock_snaps,
     }
 
-def stock_stats(acronym: str, current_price: float):
-    since_24 = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    since_7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+def _row_price(row):
+    try:
+        return float(row["current_price"])
+    except Exception:
+        return None
+
+
+def _pct_change(current, old):
+    try:
+        current = float(current)
+        old = float(old)
+        if old == 0:
+            return 0.0
+        return ((current - old) / old) * 100.0
+    except Exception:
+        return 0.0
+
+
+def _oldest_price_since(acronym: str, since_iso: str, fallback_price: float):
     with db() as conn:
-        r24 = conn.execute(
+        row = conn.execute(
             """
-            SELECT MIN(current_price) mn, MAX(current_price) mx, AVG(current_price) av, COUNT(*) c
-            FROM stock_snapshots WHERE acronym=? AND created_at>=?
+            SELECT current_price FROM stock_snapshots
+            WHERE acronym=? AND created_at>=?
+            ORDER BY created_at ASC, id ASC LIMIT 1
             """,
-            (acronym, since_24),
+            (acronym, since_iso),
         ).fetchone()
-        r7 = conn.execute(
-            """
-            SELECT MIN(current_price) mn, MAX(current_price) mx, AVG(current_price) av, COUNT(*) c
-            FROM stock_snapshots WHERE acronym=? AND created_at>=?
-            """,
-            (acronym, since_7),
-        ).fetchone()
+    return _row_price(row) if row else float(fallback_price)
+
+
+def stock_stats(acronym: str, current_price: float):
+    """Pattern-ready stock stats.
+
+    Uses only stored Torn API stock snapshots. No Torn page scraping and no account action.
+    The goal is to detect simple repeatable behavior: dips, turns, bounces, breakouts,
+    over-extension, and falling-knife risk.
+    """
+    current_price = float(current_price)
+    now_dt = datetime.now(timezone.utc)
+    since_1 = (now_dt - timedelta(hours=1)).replace(microsecond=0).isoformat()
+    since_6 = (now_dt - timedelta(hours=6)).replace(microsecond=0).isoformat()
+    since_24 = (now_dt - timedelta(hours=24)).replace(microsecond=0).isoformat()
+    since_7 = (now_dt - timedelta(days=7)).replace(microsecond=0).isoformat()
+    with db() as conn:
+        def stat_since(since):
+            return conn.execute(
+                """
+                SELECT MIN(current_price) mn, MAX(current_price) mx, AVG(current_price) av, COUNT(*) c
+                FROM stock_snapshots WHERE acronym=? AND created_at>=?
+                """,
+                (acronym, since),
+            ).fetchone()
+        r1 = stat_since(since_1)
+        r6 = stat_since(since_6)
+        r24 = stat_since(since_24)
+        r7 = stat_since(since_7)
         first = conn.execute(
             "SELECT current_price FROM stock_snapshots WHERE acronym=? ORDER BY id ASC LIMIT 1", (acronym,)
         ).fetchone()
         prev = conn.execute(
             "SELECT current_price FROM stock_snapshots WHERE acronym=? ORDER BY id DESC LIMIT 2", (acronym,)
         ).fetchall()
+        support_row = conn.execute(
+            """
+            SELECT MIN(current_price) mn FROM stock_snapshots
+            WHERE acronym=? AND created_at>=?
+            """,
+            (acronym, since_7),
+        ).fetchone()
+
     def val(row, key, default=None):
         return row[key] if row and row[key] is not None else default
-    mn24, mx24, avg24, c24 = val(r24, "mn", current_price), val(r24, "mx", current_price), val(r24, "av", current_price), int(val(r24, "c", 0) or 0)
-    mn7, mx7, avg7, c7 = val(r7, "mn", current_price), val(r7, "mx", current_price), val(r7, "av", current_price), int(val(r7, "c", 0) or 0)
+
+    def pack(row):
+        mn = float(val(row, "mn", current_price) or current_price)
+        mx = float(val(row, "mx", current_price) or current_price)
+        av = float(val(row, "av", current_price) or current_price)
+        c = int(val(row, "c", 0) or 0)
+        return mn, mx, av, c
+
+    mn1, mx1, avg1, c1 = pack(r1)
+    mn6, mx6, avg6, c6 = pack(r6)
+    mn24, mx24, avg24, c24 = pack(r24)
+    mn7, mx7, avg7, c7 = pack(r7)
     range24 = max(mx24 - mn24, 0.0001)
     range7 = max(mx7 - mn7, 0.0001)
     position24 = (current_price - mn24) / range24 if mx24 > mn24 else 0.5
     position7 = (current_price - mn7) / range7 if mx7 > mn7 else 0.5
-    prev_price = prev[1]["current_price"] if len(prev) > 1 else current_price
-    tick_pct = ((current_price - prev_price) / prev_price * 100) if prev_price else 0
-    first_price = first["current_price"] if first else current_price
-    all_pct = ((current_price - first_price) / first_price * 100) if first_price else 0
-    volatility24 = (range24 / avg24 * 100) if avg24 else 0
+    prev_price = _row_price(prev[1]) if len(prev) > 1 else current_price
+    tick_pct = _pct_change(current_price, prev_price)
+    first_price = _row_price(first) if first else current_price
+    all_pct = _pct_change(current_price, first_price)
+    change_1h_pct = _pct_change(current_price, _oldest_price_since(acronym, since_1, current_price))
+    change_6h_pct = _pct_change(current_price, _oldest_price_since(acronym, since_6, current_price))
+    change_24h_pct = _pct_change(current_price, _oldest_price_since(acronym, since_24, current_price))
+    change_7d_pct = _pct_change(current_price, _oldest_price_since(acronym, since_7, current_price))
+    volatility1 = (max(mx1 - mn1, 0.0) / avg1 * 100.0) if avg1 else 0.0
+    volatility6 = (max(mx6 - mn6, 0.0) / avg6 * 100.0) if avg6 else 0.0
+    volatility24 = (range24 / avg24 * 100.0) if avg24 else 0.0
+    volatility7 = (range7 / avg7 * 100.0) if avg7 else 0.0
+
+    # Support touches: how often recent prices were close to the 7-day low.
+    support_low = float(support_row["mn"] or mn7) if support_row else mn7
+    support_ceiling = support_low * 1.03 if support_low else current_price
+    with db() as conn:
+        touch = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM stock_snapshots
+            WHERE acronym=? AND created_at>=? AND current_price<=?
+            """,
+            (acronym, since_7, support_ceiling),
+        ).fetchone()
+    support_touches = int((touch or {}).get("c", 0) or 0) if hasattr(touch, 'get') else int(touch["c"] or 0)
+
     return {
+        "min1": mn1, "max1": mx1, "avg1": avg1, "count1": c1,
+        "min6": mn6, "max6": mx6, "avg6": avg6, "count6": c6,
         "min24": mn24, "max24": mx24, "avg24": avg24, "count24": c24,
         "min7": mn7, "max7": mx7, "avg7": avg7, "count7": c7,
-        "position24": position24, "position7": position7,
-        "tick_pct": tick_pct, "all_pct": all_pct, "volatility24": volatility24,
+        "position24": max(0.0, min(1.0, position24)),
+        "position7": max(0.0, min(1.0, position7)),
+        "tick_pct": tick_pct, "all_pct": all_pct,
+        "change_1h_pct": change_1h_pct,
+        "change_6h_pct": change_6h_pct,
+        "change_24h_pct": change_24h_pct,
+        "change_7d_pct": change_7d_pct,
+        "volatility1": volatility1,
+        "volatility6": volatility6,
+        "volatility24": volatility24,
+        "volatility7": volatility7,
+        "support_touches": support_touches,
+    }
+
+
+def detect_stock_pattern(st: dict):
+    pos7 = float(st.get("position7") or 0.5)
+    pos24 = float(st.get("position24") or 0.5)
+    ch1 = float(st.get("change_1h_pct") or 0.0)
+    ch6 = float(st.get("change_6h_pct") or 0.0)
+    ch24 = float(st.get("change_24h_pct") or 0.0)
+    vol24 = float(st.get("volatility24") or 0.0)
+    c7 = int(st.get("count7") or 0)
+    touches = int(st.get("support_touches") or 0)
+
+    label = "Learning Pattern"
+    reason = "Needs more stored stock checks before the pattern is strong."
+    confidence = min(38.0, 12.0 + c7 * 1.3)
+    pattern_bonus = 0.0
+
+    if pos7 <= 0.30 and touches >= 3 and (ch1 >= 0 or ch6 >= -0.20):
+        label = "Bounce Setup"
+        reason = "Price is near a repeated low/support area and is no longer dropping hard."
+        confidence = 42.0 + min(30.0, touches * 4.0) + min(12.0, max(0.0, ch1) * 5.0)
+        pattern_bonus = 14.0
+    elif ch6 < -0.15 and ch1 > 0.05 and pos7 < 0.65:
+        label = "Early Turn"
+        reason = "Short-term price action is turning upward after a recent dip."
+        confidence = 48.0 + min(22.0, abs(ch6) * 4.0 + ch1 * 6.0)
+        pattern_bonus = 10.0
+    elif ch1 < -0.10 and ch6 < -0.25 and pos7 < 0.35:
+        label = "Risky Dip"
+        reason = "It is cheap, but the drop is still active. Watch instead of chasing."
+        confidence = 45.0 + min(25.0, abs(ch6) * 5.0)
+        pattern_bonus = -10.0
+    elif pos24 >= 0.86 and ch1 > 0 and ch6 > 0:
+        label = "Breakout Watch"
+        reason = "Price is near a 24h high and still moving up; stronger momentum but less cheap."
+        confidence = 45.0 + min(24.0, ch6 * 4.0)
+        pattern_bonus = 4.0
+    elif pos7 >= 0.82 and ch24 > 0.35:
+        label = "Overextended"
+        reason = "Price is close to recent highs after rising; risk of buying late."
+        confidence = 48.0 + min(20.0, ch24 * 3.0)
+        pattern_bonus = -12.0
+    elif ch6 > 0.05 and ch24 > 0.05 and pos7 < 0.80:
+        label = "Slow Climber"
+        reason = "The price is moving up steadily without being too close to its high."
+        confidence = 42.0 + min(25.0, (ch6 + ch24) * 3.5)
+        pattern_bonus = 7.0
+    elif vol24 < 0.20 and c7 >= 8:
+        label = "Flat / Waiting"
+        reason = "Price has not moved enough recently for a strong 24h opportunity."
+        confidence = 45.0
+        pattern_bonus = -4.0
+
+    # Data cap: do not overtrust patterns with tiny history.
+    data_cap = 30.0 + min(65.0, c7 * 2.0)
+    confidence = max(10.0, min(95.0, confidence, data_cap))
+    return {
+        "pattern_label": label,
+        "pattern_reason": reason,
+        "pattern_confidence": round(confidence, 1),
+        "pattern_bonus": round(pattern_bonus, 2),
+        "support_touches": touches,
     }
 
 
 def score_stock(stock, torn_id: int = None, include_learning: bool = True):
     price = float(stock["current_price"])
     st = stock_stats(stock["acronym"], price)
-    cheap24 = (1 - st["position24"]) * 32
-    cheap7 = (1 - st["position7"]) * 28
-    bounce = max(0, st["tick_pct"]) * 6
-    controlled_vol = max(0, min(st["volatility24"], 8)) * 3
-    penalty = max(0, st["position24"] - 0.82) * 35
-    base_score = max(0, cheap24 + cheap7 + bounce + controlled_vol - penalty)
-    data_points = min(100, (st["count24"] * 5) + (st["count7"] * 2))
-    confidence = max(12, min(95, 20 + data_points + min(20, st["volatility24"] * 2)))
-    expected = max(-2.5, min(12.0, (st["volatility24"] * 0.65) + (1 - st["position24"]) * 3 + max(0, st["tick_pct"] * 0.35)))
+    pat = detect_stock_pattern(st)
+
+    price_position_score = ((1 - st["position24"]) * 16) + ((1 - st["position7"]) * 14)
+    momentum_score = max(-8.0, min(18.0, (st["change_1h_pct"] * 5.0) + (st["change_6h_pct"] * 2.2)))
+    bounce_score = min(20.0, (pat["support_touches"] * 2.2) + (14.0 if pat["pattern_label"] == "Bounce Setup" else 0.0))
+    volatility_score = max(0.0, min(15.0, st["volatility24"] * 3.2))
+    overheat_penalty = max(0.0, st["position7"] - 0.78) * 30.0
+    falling_penalty = 10.0 if pat["pattern_label"] == "Risky Dip" else 0.0
+    base_score = max(0.0, price_position_score + momentum_score + bounce_score + volatility_score + pat["pattern_bonus"] - overheat_penalty - falling_penalty)
+
+    data_points = min(100.0, (st["count1"] * 8) + (st["count6"] * 5) + (st["count24"] * 3) + (st["count7"] * 1.5))
+    confidence = max(10.0, min(95.0, 16.0 + data_points + min(18.0, st["volatility24"] * 2.0) + (pat["pattern_confidence"] * 0.20)))
+    expected = max(-3.5, min(13.0, (st["volatility24"] * 0.45) + (1 - st["position24"]) * 2.2 + max(0, st["change_1h_pct"] * 0.45) + max(0, st["change_6h_pct"] * 0.12)))
+
     learning = stock_history_learning(stock["acronym"], torn_id) if include_learning else {"bonus": 0, "confidence_bonus": 0, "reason": ""}
-    score = max(0, base_score + float(learning.get("bonus") or 0))
-    confidence = max(12, min(97, confidence + float(learning.get("confidence_bonus") or 0)))
-    # Past profit/loss gently adjusts expected 24h, but never overpowers live market data.
+    score = max(0.0, base_score + float(learning.get("bonus") or 0))
+    confidence = max(10.0, min(97.0, confidence + float(learning.get("confidence_bonus") or 0)))
     if learning.get("global_avg_pct") is not None:
         expected += max(-1.5, min(1.5, float(learning["global_avg_pct"]) * 0.25))
     if learning.get("user_avg_pct") is not None:
         expected += max(-1.0, min(1.0, float(learning["user_avg_pct"]) * 0.15))
     expected = max(-3.5, min(13.0, expected))
-    reasons = []
+
+    reasons = [pat["pattern_reason"]]
     if st["position24"] < 0.35: reasons.append("near its 24h low")
     if st["position7"] < 0.40: reasons.append("below its 7d range midpoint")
-    if st["tick_pct"] > 0: reasons.append("recent tick is moving up")
+    if st["change_1h_pct"] > 0: reasons.append("1h movement is green")
+    if st["change_6h_pct"] > 0: reasons.append("6h movement is improving")
     if st["volatility24"] > 0.5: reasons.append("has enough movement for a 24h trade")
     if learning.get("reason"):
         reasons.append("history learning: " + learning["reason"])
-    if not reasons: reasons.append("best score from available stock snapshots")
+
     return {
-        **stock, **st,
+        **stock, **st, **pat,
         "base_score": round(base_score, 2),
+        "price_position_score": round(price_position_score, 2),
+        "momentum_score": round(momentum_score, 2),
+        "bounce_score": round(bounce_score, 2),
+        "volatility_score": round(volatility_score, 2),
         "history_bonus": round(float(learning.get("bonus") or 0), 2),
         "history_global_count": learning.get("global_count", 0),
         "history_global_avg_pct": learning.get("global_avg_pct"),
@@ -1660,6 +1871,30 @@ def score_stock(stock, torn_id: int = None, include_learning: bool = True):
         "expected_24h_pct": round(expected, 2),
         "reason": ", ".join(reasons),
     }
+
+
+def save_stock_pattern_results(torn_id: int, scored_rows):
+    """Store pattern score snapshots so the brain can review which patterns worked later."""
+    stamp = now_iso()
+    rows = list(scored_rows or [])[:25]
+    if not rows:
+        return 0
+    with db() as conn:
+        for r in rows:
+            conn.execute(
+                """
+                INSERT INTO stock_pattern_results(torn_id, stock_id, acronym, name, current_price,
+                    pattern_label, pattern_confidence, pattern_score, support_touches,
+                    trend_1h_pct, trend_6h_pct, trend_24h_pct, trend_7d_pct,
+                    position_24h, position_7d, volatility_24h, reason, created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (torn_id, r.get("stock_id"), r.get("acronym"), r.get("name"), r.get("current_price"),
+                 r.get("pattern_label"), r.get("pattern_confidence"), r.get("score"), r.get("support_touches"),
+                 r.get("change_1h_pct"), r.get("change_6h_pct"), r.get("change_24h_pct"), r.get("change_7d_pct"),
+                 r.get("position24"), r.get("position7"), r.get("volatility24"), r.get("reason"), stamp),
+            )
+    return len(rows)
 
 
 def latest_active_stock_pick():
@@ -1693,6 +1928,11 @@ def choose_stock_pick(torn_id: int, stocks, force=False):
     scored = sorted([score_stock(s, torn_id) for s in stocks], key=lambda x: x["score"], reverse=True)
     if not scored:
         return {"pick": None, "changed": False, "ranked": [], "decision": "No scored stocks available."}
+
+    try:
+        save_stock_pattern_results(torn_id, scored)
+    except Exception:
+        pass
 
     best = scored[0]
     current = latest_active_stock_pick()
@@ -3719,7 +3959,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.10-popular-items-fix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.11-stock-pattern-engine", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -4259,6 +4499,17 @@ def stocks_brain():
             """,
             (request.user["torn_id"],),
         ).fetchall()
+        pattern_rows = conn.execute(
+            """
+            SELECT acronym, name, pattern_label, pattern_confidence, pattern_score,
+                   support_touches, trend_1h_pct, trend_6h_pct, trend_24h_pct,
+                   position_7d, volatility_24h, reason, created_at
+            FROM stock_pattern_results
+            WHERE id IN (SELECT MAX(id) FROM stock_pattern_results GROUP BY acronym)
+            ORDER BY pattern_score DESC
+            LIMIT 12
+            """
+        ).fetchall()
     ranked_all = []
     for r in recent:
         ranked_all.append(score_stock(dict(r) | {"stock_id": r["acronym"], "market_cap": None, "total_shares": None}, request.user["torn_id"]))
@@ -4283,7 +4534,7 @@ def stocks_brain():
             "note": "The pick now compares live scores and refreshes every 24h, so it will not stay stuck on an old saved score."
         }
     move_status = stock_move_status(request.user["torn_id"], ranked_all)
-    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "stock_move": move_status, "stock_learning": stock_learning_summary(request.user["torn_id"]), "user_stock_history": [dict(r) for r in user_hist], "diagnostics": diagnostics, "server_time": now_iso()})
+    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "stock_move": move_status, "stock_learning": stock_learning_summary(request.user["torn_id"]), "user_stock_history": [dict(r) for r in user_hist], "stock_patterns": [dict(r) for r in pattern_rows], "diagnostics": diagnostics, "server_time": now_iso()})
 
 
 
