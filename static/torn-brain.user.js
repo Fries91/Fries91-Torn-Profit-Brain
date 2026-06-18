@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.4-brainstrength
-// @description  Lite self-learning Torn profit app. Step 10.5: adds Brain Strength status bar and focused Stock, Item, Travel prediction.
+// @version      1.10.6-visualskin
+// @description  Lite self-learning Torn profit app. Step 10.6: visual skin, neon green/purple/gold theme, hero picture, and smoother focused Stock/Item/Travel dashboard.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -20,6 +20,7 @@
 
   // CHANGE THIS AFTER RENDER DEPLOYMENT:
   const API_BASE = 'https://fries91-torn-profit-brain.onrender.com';
+  const HERO_IMAGE = API_BASE + '/static/torn-brain-hero.jpg';
 
   const K_TOKEN = 'fries91_torn_brain_token_v1';
   const K_TOKEN_BACKUP = 'fries91_torn_brain_token_backup_v1';
@@ -261,6 +262,57 @@
       border-color: rgba(250,204,21,.55);
       color: #fef08a;
     }
+    .tb-purple-pill {
+      background: rgba(88,28,135,.42);
+      border-color: rgba(168,85,247,.48);
+      color: #e9d5ff;
+    }
+    .tb-blue-pill {
+      background: rgba(7,89,133,.35);
+      border-color: rgba(56,189,248,.42);
+      color: #bae6fd;
+    }
+    .tb-promo-hero {
+      position: relative;
+      min-height: 112px;
+      border: 1px solid rgba(168,85,247,.34);
+      border-radius: 16px;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, rgba(34,197,94,.20), rgba(88,28,135,.24) 55%, rgba(250,204,21,.12));
+      overflow: hidden;
+    }
+    .tb-promo-hero img {
+      width: 100%;
+      height: 126px;
+      object-fit: cover;
+      opacity: .72;
+      display: block;
+      filter: saturate(1.15) contrast(1.05);
+    }
+    .tb-promo-hero:after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, rgba(0,0,0,.78), rgba(0,0,0,.28) 54%, rgba(0,0,0,.72));
+      pointer-events: none;
+    }
+    .tb-promo-copy {
+      position: absolute;
+      inset: 10px;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+    .tb-promo-kicker { color:#facc15; font-size:10px; font-weight:1000; letter-spacing:.8px; text-transform:uppercase; }
+    .tb-promo-title { color:#dcfce7; font-size:20px; font-weight:1000; line-height:1.05; text-shadow: 0 0 16px rgba(34,197,94,.45); }
+    .tb-promo-sub { color:#e9d5ff; font-size:11px; font-weight:800; }
+    .tb-move-card { border-color: rgba(168,85,247,.32) !important; background: linear-gradient(180deg, rgba(17,24,39,.92), rgba(5,10,7,.92)) !important; }
+    .tb-kpi:nth-child(1) { border-color: rgba(34,197,94,.34); background: linear-gradient(180deg, rgba(20,83,45,.24), rgba(0,0,0,.22)); }
+    .tb-kpi:nth-child(2) { border-color: rgba(168,85,247,.34); background: linear-gradient(180deg, rgba(88,28,135,.20), rgba(0,0,0,.22)); }
+    .tb-kpi:nth-child(3) { border-color: rgba(56,189,248,.34); background: linear-gradient(180deg, rgba(7,89,133,.20), rgba(0,0,0,.22)); }
+
     .tb-input, .tb-select {
       width: 100%;
       box-sizing: border-box;
@@ -349,8 +401,8 @@
     /* Step 10.3 Stock Learning Focus: performance-first overrides */
     #tb-panel, #tb-icon, .tb-card, .tb-head, .tb-tabs, .tb-tab, .tb-btn, .tb-close { animation: none !important; transition: none !important; }
     #tb-panel:before, .tb-head:after, .tb-scan:after { display: none !important; }
-    #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: rgba(5,10,7,.98) !important; }
-    .tb-card { box-shadow: none !important; }
+    #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: radial-gradient(circle at 80% 0%, rgba(88,28,135,.16), transparent 30%), radial-gradient(circle at 0% 10%, rgba(34,197,94,.16), transparent 28%), rgba(5,10,7,.98) !important; }
+    .tb-card { box-shadow: none !important; border-color: rgba(74,222,128,.24) !important; }
     .tb-scan { background: rgba(20,83,45,.16) !important; }
     #tb-icon { width: 32px !important; height: 32px !important; min-width: 32px !important; padding: 0 !important; font-size: 13px !important; border-radius: 11px !important; box-shadow: 0 3px 10px rgba(0,0,0,.65), 0 0 10px rgba(34,197,94,.34) !important; }
     #tb-icon:before { display:none !important; }
@@ -659,8 +711,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>Lite Focus Includes</h3>
-        <div class="tb-muted">Lite mode: fewer animations, smaller floating movable AI🫰 icon, backend-first display, and only Stock Brain, Item Market, and Travel Profit prediction.</div>
+        <h3>Visual Lite Includes</h3>
+        <div class="tb-muted">Visual Lite: neon green, purple, gold, and blue Torn Brain look; lightweight hero image; fewer animations; backend-first display; only Stock Brain, Item Market, and Travel Profit.</div>
         <div class="tb-scan">Stock + Item + Travel watcher active · quick setup and privacy-first learning</div>
       </div>
     `;
@@ -703,9 +755,17 @@
           </div>
           <div class="tb-muted" style="margin-top:7px;">${escapeHtml(brain.reason || 'Learning from stock, item, and travel history.')}</div>
         </div>
+        <div class="tb-promo-hero">
+          <img src="${HERO_IMAGE}" loading="lazy" alt="Fries91 Torn Brain">
+          <div class="tb-promo-copy">
+            <div class="tb-promo-kicker">AI powered · data driven</div>
+            <div class="tb-promo-title">Stock · Items · Travel</div>
+            <div class="tb-promo-sub">Cleaner look, lighter UI, stronger profit focus.</div>
+          </div>
+        </div>
         ${stockMoveCard(stockMove, true)}
         <div class="tb-card tb-dashboard-card">
-          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.5 Timer</span></h3>
+          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Visual Lite</span></h3>
           <div class="tb-muted">Focused on Stock, Item Market, and Travel Profit only. Backend does the watching so PDA stays smooth.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-quick-setup">Quick Setup</button>
