@@ -209,6 +209,27 @@ def _sqlite_schema():
             CREATE INDEX IF NOT EXISTS idx_stock_predictions_active
                 ON stock_predictions(scope, status, created_at);
 
+
+            CREATE TABLE IF NOT EXISTS user_stock_holding_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                torn_id INTEGER NOT NULL,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                shares REAL,
+                average_buy_price REAL,
+                current_price REAL,
+                estimated_value REAL,
+                estimated_profit REAL,
+                estimated_profit_pct REAL,
+                source TEXT NOT NULL DEFAULT 'user_stocks',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_stock_holdings_scope_time
+                ON user_stock_holding_snapshots(torn_id, acronym, created_at);
+
             CREATE TABLE IF NOT EXISTS learning_weights (
                 scope TEXT NOT NULL,
                 module TEXT NOT NULL,
@@ -566,6 +587,27 @@ def _postgres_schema():
 
             CREATE INDEX IF NOT EXISTS idx_stock_predictions_active
                 ON stock_predictions(scope, status, created_at);
+
+
+            CREATE TABLE IF NOT EXISTS user_stock_holding_snapshots (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                shares REAL,
+                average_buy_price REAL,
+                current_price REAL,
+                estimated_value REAL,
+                estimated_profit REAL,
+                estimated_profit_pct REAL,
+                source TEXT NOT NULL DEFAULT 'user_stocks',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_stock_holdings_scope_time
+                ON user_stock_holding_snapshots(torn_id, acronym, created_at);
 
             CREATE TABLE IF NOT EXISTS learning_weights (
                 scope TEXT NOT NULL,
@@ -965,6 +1007,210 @@ def fetch_torn_stocks(api_key: str):
     return normalize_stocks(torn_get("torn", "stocks", api_key))
 
 
+def normalize_user_stock_holdings(payload, market_lookup=None):
+    """Normalize a user's current stock holdings.
+
+    Torn response shapes can vary by API version/key access, so this accepts
+    dict/list styles and records whatever usable values are present. It does
+    not need perfect holdings to help learning: even a current owned stock plus
+    market price is useful for personal bias and portfolio history.
+    """
+    market_lookup = market_lookup or {}
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("stocks") or payload.get("stock") or payload.get("portfolio") or payload.get("holdings") or []
+    if isinstance(raw, dict):
+        rows = raw.values()
+    elif isinstance(raw, list):
+        rows = raw
+    else:
+        rows = []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("stock_id") or row.get("id") or row.get("stockID") or row.get("stock") or row.get("ticker") or row.get("acronym")
+        acronym = str(row.get("acronym") or row.get("ticker") or row.get("symbol") or sid or "").upper()[:20]
+        if not acronym:
+            continue
+        market = market_lookup.get(acronym, {})
+        name = str(row.get("name") or row.get("stock_name") or market.get("name") or acronym)[:120]
+        def f(*keys):
+            for k in keys:
+                try:
+                    v = row.get(k)
+                    if v is not None and v != "":
+                        return float(v)
+                except Exception:
+                    pass
+            return None
+        shares = f("shares", "quantity", "owned", "amount", "holdings")
+        avg_buy = f("average_buy_price", "avg_buy_price", "bought_price", "buy_price", "purchase_price", "price_bought")
+        cur = f("current_price", "price", "market_price", "value")
+        if cur is None:
+            cur = market.get("current_price")
+        try:
+            cur = float(cur) if cur is not None else None
+        except Exception:
+            cur = None
+        est_value = (shares * cur) if shares is not None and cur is not None else None
+        est_profit = (shares * (cur - avg_buy)) if shares is not None and cur is not None and avg_buy else None
+        est_pct = ((cur - avg_buy) / avg_buy * 100.0) if cur is not None and avg_buy else None
+        out.append({
+            "stock_id": str(sid or acronym),
+            "acronym": acronym,
+            "name": name,
+            "shares": shares,
+            "average_buy_price": avg_buy,
+            "current_price": cur,
+            "estimated_value": est_value,
+            "estimated_profit": est_profit,
+            "estimated_profit_pct": est_pct,
+        })
+    return out
+
+
+def fetch_user_stock_holdings(api_key: str, market_lookup=None):
+    """Best-effort current holdings read. If a user's key does not allow this,
+    the scan continues using shared market prediction data only.
+    """
+    try:
+        return normalize_user_stock_holdings(torn_get("user", "stocks", api_key), market_lookup)
+    except Exception:
+        return []
+
+
+def save_user_stock_holding_snapshots(torn_id: int, holdings):
+    if not holdings:
+        return 0
+    stamp = now_iso()
+    with db() as conn:
+        for h in holdings:
+            conn.execute(
+                """
+                INSERT INTO user_stock_holding_snapshots(torn_id, stock_id, acronym, name, shares, average_buy_price,
+                    current_price, estimated_value, estimated_profit, estimated_profit_pct, created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (torn_id, h.get("stock_id"), h.get("acronym"), h.get("name"), h.get("shares"), h.get("average_buy_price"),
+                 h.get("current_price"), h.get("estimated_value"), h.get("estimated_profit"), h.get("estimated_profit_pct"), stamp),
+            )
+    return len(holdings)
+
+
+def stock_history_learning(acronym: str, torn_id: int = None):
+    """Return a small score/confidence adjustment from past prediction outcomes
+    and the user's own recorded holdings performance.
+    """
+    acronym = str(acronym or "").upper()
+    global_count = 0
+    global_avg = None
+    global_win = None
+    user_count = 0
+    user_avg = None
+    with db() as conn:
+        gr = conn.execute(
+            """
+            SELECT COUNT(*) AS c, AVG(actual_24h_pct) AS avg_pct, AVG(was_profitable) AS win_rate
+            FROM stock_predictions
+            WHERE acronym=? AND actual_24h_pct IS NOT NULL
+            """,
+            (acronym,),
+        ).fetchone()
+        if gr:
+            global_count = int(gr["c"] or 0)
+            global_avg = gr["avg_pct"]
+            global_win = gr["win_rate"]
+        if torn_id:
+            ur = conn.execute(
+                """
+                SELECT COUNT(*) AS c, AVG(estimated_profit_pct) AS avg_pct
+                FROM user_stock_holding_snapshots
+                WHERE torn_id=? AND acronym=? AND estimated_profit_pct IS NOT NULL
+                """,
+                (torn_id, acronym),
+            ).fetchone()
+            if ur:
+                user_count = int(ur["c"] or 0)
+                user_avg = ur["avg_pct"]
+    bonus = 0.0
+    conf_bonus = 0.0
+    parts = []
+    if global_count >= 3 and global_avg is not None:
+        bonus += max(-10.0, min(10.0, float(global_avg) * 1.8))
+        conf_bonus += min(8.0, global_count * 0.5)
+        parts.append(f"past global picks avg {float(global_avg):+.2f}% over {global_count}")
+    if global_count >= 3 and global_win is not None:
+        bonus += max(-5.0, min(5.0, (float(global_win) - 0.5) * 10.0))
+    if user_count >= 2 and user_avg is not None:
+        bonus += max(-8.0, min(8.0, float(user_avg) * 0.9))
+        conf_bonus += min(6.0, user_count * 0.7)
+        parts.append(f"your recorded holdings avg {float(user_avg):+.2f}% over {user_count}")
+    return {
+        "bonus": round(max(-18.0, min(18.0, bonus)), 2),
+        "confidence_bonus": round(max(0.0, min(14.0, conf_bonus)), 1),
+        "global_count": global_count,
+        "global_avg_pct": round(float(global_avg), 3) if global_avg is not None else None,
+        "global_win_rate": round(float(global_win) * 100.0, 1) if global_win is not None else None,
+        "user_count": user_count,
+        "user_avg_pct": round(float(user_avg), 3) if user_avg is not None else None,
+        "reason": "; ".join(parts),
+    }
+
+
+def stock_learning_summary(torn_id: int):
+    """Compact visibility summary so users can see what is shared vs private.
+    Shared global learning uses prediction outcomes only; personal holdings stay private
+    but can still adjust that user's own stock scoring.
+    """
+    with db() as conn:
+        global_results = conn.execute(
+            """
+            SELECT COUNT(*) AS checked,
+                   AVG(actual_24h_pct) AS avg_result_pct,
+                   AVG(was_profitable) AS win_rate
+            FROM stock_predictions
+            WHERE actual_24h_pct IS NOT NULL
+            """
+        ).fetchone()
+        global_stocks = conn.execute(
+            """
+            SELECT COUNT(DISTINCT acronym) AS c
+            FROM stock_predictions
+            WHERE actual_24h_pct IS NOT NULL
+            """
+        ).fetchone()
+        user_snapshots = conn.execute(
+            """
+            SELECT COUNT(*) AS snapshots,
+                   COUNT(DISTINCT acronym) AS stocks,
+                   AVG(estimated_profit_pct) AS avg_profit_pct,
+                   MAX(created_at) AS last_seen
+            FROM user_stock_holding_snapshots
+            WHERE torn_id=?
+            """,
+            (torn_id,),
+        ).fetchone()
+    checked = int(global_results["checked"] or 0) if global_results else 0
+    win_rate = global_results["win_rate"] if global_results else None
+    avg_result = global_results["avg_result_pct"] if global_results else None
+    snapshots = int(user_snapshots["snapshots"] or 0) if user_snapshots else 0
+    user_stocks = int(user_snapshots["stocks"] or 0) if user_snapshots else 0
+    last_seen = user_snapshots["last_seen"] if user_snapshots else None
+    global_stock_count = int(global_stocks["c"] or 0) if global_stocks else 0
+    return {
+        "global_results_checked": checked,
+        "global_stocks_learned": global_stock_count,
+        "global_avg_result_pct": round(float(avg_result), 3) if avg_result is not None else None,
+        "global_win_rate": round(float(win_rate) * 100.0, 1) if win_rate is not None else None,
+        "user_stock_snapshots": snapshots,
+        "user_stocks_tracked": user_stocks,
+        "user_avg_profit_pct": round(float(user_snapshots["avg_profit_pct"]), 3) if user_snapshots and user_snapshots["avg_profit_pct"] is not None else None,
+        "user_last_seen": last_seen,
+        "shared_note": "Global prediction outcomes help everyone. Personal holdings stay private and only adjust that user's scoring unless converted into anonymous aggregated results.",
+    }
+
+
 def stock_stats(acronym: str, current_price: float):
     since_24 = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     since_7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -1010,7 +1256,7 @@ def stock_stats(acronym: str, current_price: float):
     }
 
 
-def score_stock(stock):
+def score_stock(stock, torn_id: int = None, include_learning: bool = True):
     price = float(stock["current_price"])
     st = stock_stats(stock["acronym"], price)
     cheap24 = (1 - st["position24"]) * 32
@@ -1018,17 +1264,41 @@ def score_stock(stock):
     bounce = max(0, st["tick_pct"]) * 6
     controlled_vol = max(0, min(st["volatility24"], 8)) * 3
     penalty = max(0, st["position24"] - 0.82) * 35
-    score = max(0, cheap24 + cheap7 + bounce + controlled_vol - penalty)
+    base_score = max(0, cheap24 + cheap7 + bounce + controlled_vol - penalty)
     data_points = min(100, (st["count24"] * 5) + (st["count7"] * 2))
     confidence = max(12, min(95, 20 + data_points + min(20, st["volatility24"] * 2)))
     expected = max(-2.5, min(12.0, (st["volatility24"] * 0.65) + (1 - st["position24"]) * 3 + max(0, st["tick_pct"] * 0.35)))
+    learning = stock_history_learning(stock["acronym"], torn_id) if include_learning else {"bonus": 0, "confidence_bonus": 0, "reason": ""}
+    score = max(0, base_score + float(learning.get("bonus") or 0))
+    confidence = max(12, min(97, confidence + float(learning.get("confidence_bonus") or 0)))
+    # Past profit/loss gently adjusts expected 24h, but never overpowers live market data.
+    if learning.get("global_avg_pct") is not None:
+        expected += max(-1.5, min(1.5, float(learning["global_avg_pct"]) * 0.25))
+    if learning.get("user_avg_pct") is not None:
+        expected += max(-1.0, min(1.0, float(learning["user_avg_pct"]) * 0.15))
+    expected = max(-3.5, min(13.0, expected))
     reasons = []
     if st["position24"] < 0.35: reasons.append("near its 24h low")
     if st["position7"] < 0.40: reasons.append("below its 7d range midpoint")
     if st["tick_pct"] > 0: reasons.append("recent tick is moving up")
     if st["volatility24"] > 0.5: reasons.append("has enough movement for a 24h trade")
+    if learning.get("reason"):
+        reasons.append("history learning: " + learning["reason"])
     if not reasons: reasons.append("best score from available stock snapshots")
-    return {**stock, **st, "score": round(score, 2), "confidence": round(confidence, 1), "expected_24h_pct": round(expected, 2), "reason": ", ".join(reasons)}
+    return {
+        **stock, **st,
+        "base_score": round(base_score, 2),
+        "history_bonus": round(float(learning.get("bonus") or 0), 2),
+        "history_global_count": learning.get("global_count", 0),
+        "history_global_avg_pct": learning.get("global_avg_pct"),
+        "history_global_win_rate": learning.get("global_win_rate"),
+        "history_user_count": learning.get("user_count", 0),
+        "history_user_avg_pct": learning.get("user_avg_pct"),
+        "score": round(score, 2),
+        "confidence": round(confidence, 1),
+        "expected_24h_pct": round(expected, 2),
+        "reason": ", ".join(reasons),
+    }
 
 
 def latest_active_stock_pick():
@@ -1059,7 +1329,7 @@ def choose_stock_pick(torn_id: int, stocks, force=False):
     saved score never decayed. This version rescans and re-scores the current
     pick every time, then uses the live score comparison.
     """
-    scored = sorted([score_stock(s) for s in stocks], key=lambda x: x["score"], reverse=True)
+    scored = sorted([score_stock(s, torn_id) for s in stocks], key=lambda x: x["score"], reverse=True)
     if not scored:
         return {"pick": None, "changed": False, "ranked": [], "decision": "No scored stocks available."}
 
@@ -2483,8 +2753,13 @@ def perform_stock_scan_for_user(torn_id: int, reason: str = "auto"):
         if not stocks:
             raise ValueError("Torn returned no stock rows.")
         save_stock_snapshots(torn_id, stocks)
+        market_lookup = {s["acronym"]: s for s in stocks}
+        holdings = fetch_user_stock_holdings(key, market_lookup)
+        holdings_seen = save_user_stock_holding_snapshots(torn_id, holdings)
         result = choose_stock_pick(torn_id, stocks)
         message = "Auto scan complete. " + str(result.get("decision") or "")
+        if holdings_seen:
+            message += f" User stock history captured: {holdings_seen}."
         if result.get("changed"):
             message += " Stock pick changed."
         with db() as conn:
@@ -2506,7 +2781,7 @@ def perform_stock_scan_for_user(torn_id: int, reason: str = "auto"):
                 (torn_id, 1, now_iso(), next_scan, 1, None, 1, now_iso()),
             )
         record_scan_run(torn_id, "ok", rows_seen, message, started)
-        return {"ok": True, "stocks_seen": rows_seen, **result}
+        return {"ok": True, "stocks_seen": rows_seen, "user_holdings_seen": locals().get("holdings_seen", 0), **result}
     except Exception as e:
         err = str(e)
         with db() as conn:
@@ -2933,7 +3208,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "9.0-lite-focus",
+        "step": "10.1-learning-visibility",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -2942,7 +3217,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step9.0-lite-focus", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.1-learning-visibility", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -3052,7 +3327,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "9.0-lite-focus",
+        "step": "10.1-learning-visibility",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -3061,7 +3336,7 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_9"
+            "lite_focus": "active_step_10_1"
         },
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
@@ -3117,13 +3392,14 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "9.0-lite-focus",
+        "step": "10.1-learning-visibility",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else None,
         "best_move": best_move,
         "stock_pick": stock,
+        "stock_learning": stock_learning_summary(torn_id),
         "items": items,
         "points": {
             "latest": points.get("latest"),
@@ -3315,9 +3591,21 @@ def stocks_brain():
             """
         ).fetchall()
         count = conn.execute("SELECT COUNT(*) AS c FROM stock_snapshots").fetchone()["c"]
+        user_hist = conn.execute(
+            """
+            SELECT acronym, name, COUNT(*) AS samples, AVG(estimated_profit_pct) AS avg_profit_pct,
+                   MAX(created_at) AS last_seen
+            FROM user_stock_holding_snapshots
+            WHERE torn_id=?
+            GROUP BY acronym, name
+            ORDER BY last_seen DESC
+            LIMIT 8
+            """,
+            (request.user["torn_id"],),
+        ).fetchall()
     ranked_all = []
     for r in recent:
-        ranked_all.append(score_stock(dict(r) | {"stock_id": r["acronym"], "market_cap": None, "total_shares": None}))
+        ranked_all.append(score_stock(dict(r) | {"stock_id": r["acronym"], "market_cap": None, "total_shares": None}, request.user["torn_id"]))
     ranked_all = sorted(ranked_all, key=lambda x: x["score"], reverse=True)
     ranked = ranked_all[:10]
     live_pick = None
@@ -3338,8 +3626,26 @@ def stocks_brain():
             "best_live_score": best.get("score"),
             "note": "The pick now compares live scores and refreshes every 24h, so it will not stay stuck on an old saved score."
         }
-    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "diagnostics": diagnostics, "server_time": now_iso()})
+    return jsonify({"ok": True, "pick": pick, "ranked": ranked, "snapshot_count": count, "stock_learning": stock_learning_summary(request.user["torn_id"]), "user_stock_history": [dict(r) for r in user_hist], "diagnostics": diagnostics, "server_time": now_iso()})
 
+
+
+@app.get("/api/stocks/user-history")
+@require_auth
+def stocks_user_history():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT acronym, name, shares, average_buy_price, current_price, estimated_value,
+                   estimated_profit, estimated_profit_pct, created_at
+            FROM user_stock_holding_snapshots
+            WHERE torn_id=?
+            ORDER BY id DESC
+            LIMIT 60
+            """,
+            (request.user["torn_id"],),
+        ).fetchall()
+    return jsonify({"ok": True, "holdings": [dict(r) for r in rows]})
 
 @app.get("/api/stocks/predictions")
 @require_auth
