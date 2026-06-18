@@ -940,6 +940,102 @@ def init_step_10_2_db():
 
 init_step_10_2_db()
 
+# Step 10.3: defensive runtime migrations.
+# Existing PostgreSQL databases created before Step 10 may be missing newer tables.
+# This runs once on startup/request and safely creates only what is missing.
+_RUNTIME_MIGRATIONS_DONE = False
+_RUNTIME_MIGRATION_LOCK = threading.Lock()
+
+def ensure_runtime_migrations():
+    global _RUNTIME_MIGRATIONS_DONE
+    if _RUNTIME_MIGRATIONS_DONE:
+        return
+    with _RUNTIME_MIGRATION_LOCK:
+        if _RUNTIME_MIGRATIONS_DONE:
+            return
+        if USE_POSTGRES:
+            script = """
+            CREATE TABLE IF NOT EXISTS user_stock_holding_snapshots (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                shares REAL,
+                average_buy_price REAL,
+                current_price REAL,
+                estimated_value REAL,
+                estimated_profit REAL,
+                estimated_profit_pct REAL,
+                source TEXT NOT NULL DEFAULT 'user_stocks',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_stock_holdings_scope_time
+                ON user_stock_holding_snapshots(torn_id, acronym, created_at);
+
+            CREATE TABLE IF NOT EXISTS prediction_feedback (
+                id SERIAL PRIMARY KEY,
+                torn_id INTEGER NOT NULL,
+                module TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                feedback TEXT NOT NULL,
+                context_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
+                ON prediction_feedback(module, created_at);
+            """
+        else:
+            script = """
+            CREATE TABLE IF NOT EXISTS user_stock_holding_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                torn_id INTEGER NOT NULL,
+                stock_id TEXT,
+                acronym TEXT NOT NULL,
+                name TEXT,
+                shares REAL,
+                average_buy_price REAL,
+                current_price REAL,
+                estimated_value REAL,
+                estimated_profit REAL,
+                estimated_profit_pct REAL,
+                source TEXT NOT NULL DEFAULT 'user_stocks',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_stock_holdings_scope_time
+                ON user_stock_holding_snapshots(torn_id, acronym, created_at);
+
+            CREATE TABLE IF NOT EXISTS prediction_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                torn_id INTEGER NOT NULL,
+                module TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                feedback TEXT NOT NULL,
+                context_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
+                ON prediction_feedback(module, created_at);
+            """
+        with db() as conn:
+            conn.executescript(script)
+        _RUNTIME_MIGRATIONS_DONE = True
+
+# Run once at import, then again defensively before API requests if startup was interrupted.
+try:
+    ensure_runtime_migrations()
+except Exception:
+    _RUNTIME_MIGRATIONS_DONE = False
+
+@app.before_request
+def _tb_runtime_migration_guard():
+    if request.path.startswith('/api/') or request.path in ('/', '/health'):
+        ensure_runtime_migrations()
+
 
 def data_strength_label(samples):
     try:
@@ -3283,7 +3379,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.2-user-friendly",
+        "step": "10.3-schemafix",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3292,7 +3388,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.2-user-friendly", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.3-schemafix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -3402,7 +3498,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.2-user-friendly",
+        "step": "10.3-schemafix",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -3411,7 +3507,7 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_10_2"
+            "lite_focus": "active_step_10_3"
         },
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
@@ -3487,7 +3583,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.2-user-friendly",
+        "step": "10.3-schemafix",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
