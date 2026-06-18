@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.7-nohero
-// @description  Lite self-learning Torn profit app. Step 10.7: visual skin without external hero file, neon green/purple/gold theme, and smoother focused Stock/Item/Travel dashboard.
+// @version      1.10.9-itempopup
+// @description  Lite self-learning Torn profit app. Step 10.9: item buy-price popups with close, buy link, max-amount prefill attempt, and popup setting.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -26,6 +26,7 @@
   const K_APIKEY = 'fries91_torn_brain_api_key_v1';
   const K_OPEN = 'fries91_torn_brain_open_v1';
   const K_ICON_POS = 'fries91_torn_brain_icon_pos_v2';
+  const K_ITEM_POPUP_SEEN = 'fries91_torn_brain_item_popup_seen_v1';
     const TABS = ['Overview', 'Stock Brain', 'Item Market', 'Travel Profit', 'Settings'];
 
   let state = null;
@@ -41,6 +42,8 @@
   let tabsMoved = false;
   let lastStateRefresh = 0;
   let authToken = '';
+  let itemPopupBusy = false;
+  let lastItemPopupCheck = 0;
 
   GM_addStyle(`
     @keyframes tbPulseGlow {
@@ -399,6 +402,100 @@
     .tb-body { scroll-behavior:smooth; }
     .tb-sticky-actions { position:sticky; bottom:0; padding:8px 0 0; background:linear-gradient(180deg, transparent, rgba(5,10,7,.96) 42%); }
 
+
+    /* Step 10.8 stronger poster-style color skin, still lightweight and image-free */
+    #tb-icon {
+      background: radial-gradient(circle at 20% 15%, rgba(34,197,94,.55), transparent 32%), linear-gradient(135deg, #07150d, #28104a 52%, #4a2b08) !important;
+      border-color: rgba(250,204,21,.78) !important;
+      color: #f5f3ff !important;
+      box-shadow: 0 0 0 1px rgba(168,85,247,.36), 0 8px 22px rgba(0,0,0,.68), 0 0 18px rgba(34,197,94,.32) !important;
+    }
+    #tb-panel {
+      background:
+        radial-gradient(circle at 10% -5%, rgba(34,197,94,.32), transparent 24%),
+        radial-gradient(circle at 92% 8%, rgba(168,85,247,.30), transparent 26%),
+        radial-gradient(circle at 50% 100%, rgba(250,204,21,.10), transparent 35%),
+        linear-gradient(180deg, rgba(4,10,8,.99), rgba(10,8,20,.99)) !important;
+      border-color: rgba(168,85,247,.55) !important;
+      box-shadow: 0 20px 58px rgba(0,0,0,.82), 0 0 35px rgba(34,197,94,.16), 0 0 26px rgba(168,85,247,.12) !important;
+    }
+    .tb-head {
+      background: linear-gradient(90deg, rgba(3,20,13,.98), rgba(42,16,74,.94), rgba(74,43,8,.92)) !important;
+      border-bottom-color: rgba(168,85,247,.34) !important;
+    }
+    .tb-tab.active {
+      background: linear-gradient(135deg, rgba(22,163,74,.88), rgba(126,34,206,.62), rgba(202,138,4,.55)) !important;
+      border-color: rgba(250,204,21,.78) !important;
+    }
+    .tb-card {
+      background: linear-gradient(180deg, rgba(12,24,22,.94), rgba(14,9,24,.92)) !important;
+      border-color: rgba(168,85,247,.22) !important;
+    }
+    .tb-dashboard-card, .tb-brain-strength {
+      background: linear-gradient(180deg, rgba(20,83,45,.30), rgba(42,16,74,.26), rgba(2,6,4,.74)) !important;
+      border-color: rgba(250,204,21,.50) !important;
+    }
+    .tb-promo-hero {
+      background:
+        radial-gradient(circle at 20% 25%, rgba(34,197,94,.48), transparent 25%),
+        radial-gradient(circle at 78% 30%, rgba(168,85,247,.45), transparent 28%),
+        radial-gradient(circle at 60% 82%, rgba(56,189,248,.26), transparent 28%),
+        linear-gradient(135deg, rgba(5,18,15,.97), rgba(29,12,58,.96), rgba(61,36,7,.96)) !important;
+      border: 1px solid rgba(250,204,21,.48) !important;
+      box-shadow: inset 0 0 28px rgba(34,197,94,.12), inset 0 0 24px rgba(168,85,247,.16), 0 10px 24px rgba(0,0,0,.35) !important;
+    }
+    .tb-brain-fill {
+      background: linear-gradient(90deg, #7c3aed 0%, #0ea5e9 38%, #22c55e 72%, #facc15 100%) !important;
+      box-shadow: 0 0 14px rgba(34,197,94,.36), 0 0 12px rgba(168,85,247,.22) !important;
+    }
+    .tb-brain-score { color:#fef08a !important; text-shadow:0 0 12px rgba(250,204,21,.30), 0 0 10px rgba(168,85,247,.22) !important; }
+    .tb-kpi strong, .tb-promo-title { color:#f5f3ff !important; }
+    .tb-kpi small, .tb-hero-label { color:#86efac !important; }
+    .tb-pill { border-color: rgba(168,85,247,.30) !important; background: rgba(88,28,135,.26) !important; }
+
+
+    #tb-item-popup-layer {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+      background: radial-gradient(circle at 50% 22%, rgba(34,197,94,.20), transparent 32%), rgba(0,0,0,.74);
+      backdrop-filter: blur(3px);
+    }
+    #tb-item-popup-layer.tb-show { display: flex; }
+    .tb-item-popup-card {
+      width: min(430px, 94vw);
+      border-radius: 18px;
+      border: 1px solid rgba(250,204,21,.85);
+      background:
+        radial-gradient(circle at 16% 8%, rgba(34,197,94,.28), transparent 34%),
+        radial-gradient(circle at 92% 18%, rgba(168,85,247,.22), transparent 30%),
+        linear-gradient(180deg, rgba(4,10,7,.98), rgba(17,24,39,.98));
+      box-shadow: 0 22px 70px rgba(0,0,0,.86), 0 0 34px rgba(34,197,94,.32), inset 0 0 22px rgba(250,204,21,.06);
+      color: #f7fee7;
+      padding: 14px;
+      font-family: Arial, Helvetica, sans-serif;
+      position: relative;
+      overflow: hidden;
+    }
+    .tb-item-popup-card:before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: linear-gradient(rgba(34,197,94,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,197,94,.055) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+    }
+    .tb-item-popup-inner { position: relative; z-index: 1; }
+    .tb-popup-kicker { color:#facc15; font-weight:1000; font-size:11px; letter-spacing:.9px; text-transform:uppercase; }
+    .tb-popup-title { color:#dcfce7; font-weight:1000; font-size:20px; line-height:1.1; margin:5px 0; text-shadow:0 0 16px rgba(34,197,94,.45); }
+    .tb-popup-body { color:#d9f99d; font-size:13px; line-height:1.35; margin:8px 0 10px; }
+    .tb-popup-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .tb-popup-actions .tb-btn, .tb-popup-actions .tb-link { flex:1 1 auto; text-align:center; justify-content:center; }
+
     @media (min-width: 820px) { #tb-panel { left: auto; width: 760px; right: 18px; } }
     @media (max-width: 420px) {
       #tb-panel { top: 46px; bottom: 8px; left: 6px; right: 6px; border-radius: 15px; }
@@ -591,13 +688,17 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.3</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.9</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
       <div class="tb-body" id="tb-body"></div>
     `;
     document.body.appendChild(panel);
+
+    const itemPopup = document.createElement('div');
+    itemPopup.id = 'tb-item-popup-layer';
+    document.body.appendChild(itemPopup);
 
     setupFloatingIcon(icon);
     el('tb-close').addEventListener('click', closePanel);
@@ -720,8 +821,8 @@
         <div class="tb-muted" id="tb-login-msg"></div>
       </div>
       <div class="tb-card">
-        <h3>No-Image Visual Includes</h3>
-        <div class="tb-muted">No-Image Visual: neon green, purple, gold, and blue Torn Brain look; no external hero image file; fewer animations; backend-first display; only Stock Brain, Item Market, and Travel Profit.</div>
+        <h3>Brain Color Includes</h3>
+        <div class="tb-muted">Brain Color: neon green, purple, gold, and blue Torn Brain look; no external hero image file; fewer animations; backend-first display; only Stock Brain, Item Market, and Travel Profit.</div>
         <div class="tb-scan">Stock + Item + Travel watcher active · quick setup and privacy-first learning</div>
       </div>
     `;
@@ -762,18 +863,19 @@
             <div><b>${brain.global_win_rate == null ? '—' : Number(brain.global_win_rate).toFixed(1) + '%'}</b>accuracy</div>
             <div><b>${fmtInt(brain.users_contributing || 0)}</b>users</div>
           </div>
-          <div class="tb-muted" style="margin-top:7px;">${escapeHtml(brain.reason || 'Learning from stock, item, and travel history.')}</div>
+          <div class="tb-muted" style="margin-top:7px;">${escapeHtml(brain.reason || 'Learning from stored stock, item, and travel history.')}</div>
+          <div class="tb-muted" style="margin-top:5px;">Maturity cap: ${brain.maturity_cap == null ? '—' : Number(brain.maturity_cap).toFixed(0) + '%'} · Checked stock results: ${fmtInt(brain.stock_checked || 0)}</div>
         </div>
         <div class="tb-promo-hero">
           <div class="tb-promo-copy">
             <div class="tb-promo-kicker">AI powered · data driven</div>
             <div class="tb-promo-title">Stock · Items · Travel</div>
-            <div class="tb-promo-sub">No extra image file needed · smoother GitHub deploy.</div>
+            <div class="tb-promo-sub">Brain strength grows as users add real market data.</div>
           </div>
         </div>
         ${stockMoveCard(stockMove, true)}
         <div class="tb-card tb-dashboard-card">
-          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">No-Image Visual</span></h3>
+          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Brain Color</span></h3>
           <div class="tb-muted">Focused on Stock, Item Market, and Travel Profit only. Backend does the watching so PDA stays smooth.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-quick-setup">Quick Setup</button>
@@ -902,6 +1004,105 @@
     }
   }
 
+
+  function getSeenItemPopupIds() {
+    try { return JSON.parse(GM_getValue(K_ITEM_POPUP_SEEN, '[]') || '[]'); } catch (_) { return []; }
+  }
+
+  function rememberSeenItemPopup(id) {
+    if (!id) return;
+    const ids = getSeenItemPopupIds().map(String);
+    if (!ids.includes(String(id))) ids.unshift(String(id));
+    try { GM_setValue(K_ITEM_POPUP_SEEN, JSON.stringify(ids.slice(0, 50))); } catch (_) {}
+  }
+
+  function parseTbMaxFromUrl(url) {
+    const m = String(url || window.location.href).match(/[?&#]tbmax=(\d+)/i);
+    return m ? Math.max(1, parseInt(m[1], 10) || 0) : 0;
+  }
+
+  function autoFillItemMaxFromUrl() {
+    if (!/\/imarket\.php/i.test(location.pathname)) return;
+    const max = parseTbMaxFromUrl(window.location.href);
+    if (!max) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      const inputs = Array.from(document.querySelectorAll('input'));
+      const qtyInputs = inputs.filter(inp => {
+        const t = ((inp.name || '') + ' ' + (inp.id || '') + ' ' + (inp.placeholder || '') + ' ' + (inp.getAttribute('aria-label') || '') + ' ' + (inp.className || '')).toLowerCase();
+        return inp.type === 'number' || /qty|quantity|amount|buy/.test(t);
+      });
+      const target = qtyInputs.find(inp => !inp.disabled && inp.offsetParent !== null) || qtyInputs[0];
+      if (target) {
+        target.focus();
+        target.value = String(max);
+        target.dispatchEvent(new Event('input', { bubbles:true }));
+        target.dispatchEvent(new Event('change', { bubbles:true }));
+        clearInterval(timer);
+      }
+      if (tries >= 20) clearInterval(timer);
+    }, 500);
+  }
+
+  async function checkItemBuyPopup(force = false) {
+    if (!token() || itemPopupBusy) return;
+    const now = Date.now();
+    if (!force && now - lastItemPopupCheck < 45000) return;
+    lastItemPopupCheck = now;
+    itemPopupBusy = true;
+    try {
+      if (state && state.item_popup_enabled === 'false') return;
+      const settings = await api('/api/settings');
+      if ((settings.settings || {}).item_popup_enabled === 'false') return;
+      const data = await api('/api/alerts');
+      const seen = getSeenItemPopupIds().map(String);
+      const hit = (data.alerts || []).find(a => String(a.is_read) !== '1' && String(a.alert_type) === 'item_buy' && !seen.includes(String(a.id)));
+      if (hit) showItemBuyPopup(hit);
+    } catch (_) {
+      // Keep popups quiet on Render wake/network hiccups.
+    } finally {
+      itemPopupBusy = false;
+    }
+  }
+
+  function showItemBuyPopup(alertRow) {
+    const layer = el('tb-item-popup-layer');
+    if (!layer || !alertRow) return;
+    const max = parseTbMaxFromUrl(alertRow.link || '');
+    layer.innerHTML = `
+      <div class="tb-item-popup-card">
+        <div class="tb-item-popup-inner">
+          <div class="tb-popup-kicker">ITEM BUY PRICE HIT</div>
+          <div class="tb-popup-title">${escapeHtml(alertRow.title || 'Watched item hit buy zone')}</div>
+          <div class="tb-popup-body">${escapeHtml(alertRow.body || 'A watched item is at or below your buy price.')}</div>
+          <div class="tb-grid">
+            <div><span class="tb-pill">Action</span><br><b>Open item market</b></div>
+            <div><span class="tb-pill tb-ai-pill">Max amount</span><br><b>${max ? escapeHtml(max) : 'Try max seen'}</b></div>
+          </div>
+          <div class="tb-muted" style="margin-top:8px">The link only opens the market and tries to fill the amount. It will not buy automatically.</div>
+          <div class="tb-popup-actions">
+            ${alertRow.link ? `<a class="tb-link" id="tb-popup-open" href="${escapeHtml(alertRow.link)}">Open item + set max</a>` : ''}
+            <button class="tb-btn" id="tb-popup-close">Close</button>
+            <button class="tb-btn tb-danger" id="tb-popup-off">Turn off popups</button>
+          </div>
+        </div>
+      </div>`;
+    layer.classList.add('tb-show');
+    el('tb-popup-close')?.addEventListener('click', () => { rememberSeenItemPopup(alertRow.id); layer.classList.remove('tb-show'); });
+    el('tb-popup-open')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      rememberSeenItemPopup(alertRow.id);
+      try { await api('/api/alerts/read', { method:'POST', body: JSON.stringify({ id: alertRow.id }) }); } catch (_) {}
+      window.location.href = alertRow.link;
+    });
+    el('tb-popup-off')?.addEventListener('click', async () => {
+      rememberSeenItemPopup(alertRow.id);
+      try { await api('/api/settings', { method:'POST', body: JSON.stringify({ item_popup_enabled: 'false' }) }); } catch (_) {}
+      layer.classList.remove('tb-show');
+    });
+  }
+
   async function renderSettings() {
     const body = el('tb-body');
     if (!token() && savedApiKey()) { body.innerHTML = `<div class="tb-card"><h3>Restoring login...</h3><div class="tb-scan">Using saved key on this device. No need to paste it again.</div></div>`; const ok = await restoreLogin('settings'); if (ok) return renderSettings(); }
@@ -939,6 +1140,12 @@
             <option value="true" ${s.item_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
             <option value="false" ${s.item_alerts_enabled === 'false' ? 'selected' : ''}>false</option>
           </select>
+          <label class="tb-muted">Item buy-price popup box</label>
+          <select class="tb-select" id="set-item-popup">
+            <option value="true" ${s.item_popup_enabled !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.item_popup_enabled === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <div class="tb-muted">When a watched item hits your buy price, show a full-screen box with close, market link, and a max-amount prefill attempt.</div>
           <div class="tb-grid">
             <input class="tb-input" id="set-item-buy-discount" placeholder="Default item buy discount %" value="${escapeHtml(s.item_default_buy_discount_pct || '3')}">
             <input class="tb-input" id="set-item-sell-markup" placeholder="Default item sell markup %" value="${escapeHtml(s.item_default_sell_markup_pct || '6')}">
@@ -995,6 +1202,7 @@
           auto_scan_enabled: el('set-auto')?.value || 'true',
           share_market_learning: el('set-share')?.value || 'true',
           item_alerts_enabled: el('set-item-alerts')?.value || 'true',
+          item_popup_enabled: el('set-item-popup')?.value || 'true',
           item_default_buy_discount_pct: el('set-item-buy-discount')?.value || '3',
           item_default_sell_markup_pct: el('set-item-sell-markup')?.value || '6',
           travel_alerts_enabled: el('set-travel-alerts')?.value || 'true',
@@ -1351,6 +1559,7 @@
       await api('/api/items/watch', { method:'POST', body: JSON.stringify({ query: q, buy_zone: el('tb-item-buy')?.value || '', sell_zone: el('tb-item-sell')?.value || '' }) });
       try { await api('/api/items/scan', { method:'POST', body: '{}' }); } catch (_) {}
       if (msg) msg.innerHTML = '<span class="tb-ok">Item added and scanned. If live listings are unavailable, catalog market value is used until live prices arrive.</span>';
+      await checkItemBuyPopup(true);
       renderItemMarket();
     } catch (e) {
       if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
@@ -1768,6 +1977,7 @@
       state = await api('/api/state');
       lastStateRefresh = now;
       updateBadge();
+      checkItemBuyPopup(false);
       if (!silent && activeTab === 'Overview') render();
     } catch (e) {
       // Do NOT log the user out for a normal Render wake-up/network hiccup.
@@ -1803,12 +2013,14 @@
   }
 
   function boot() {
+    autoFillItemMaxFromUrl();
     mount();
     refreshState(true);
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
       if (!el('tb-icon')) { mounted = false; mount(); }
       if (el('tb-panel')?.classList.contains('tb-show')) refreshState(true);
+      checkItemBuyPopup(false);
     }, 60000);
   }
 
