@@ -3719,7 +3719,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.9-item-buy-popup", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.10-popular-items-fix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -3983,7 +3983,21 @@ def quick_setup():
     key = get_api_key(torn_id)
     added = []
     skipped = []
-    popular = ["Xanax", "Donator Pack", "Feathery Hotel Coupon", "Morphine", "First Aid Kit", "Erotic DVD", "Plushie", "Flower"]
+    # Step 10.10: Popular items no longer depends only on catalog search.
+    # If the Torn item catalog is empty or fuzzy searches fail, we fall back to
+    # stable popular item IDs so the button always adds useful watched items.
+    popular = [
+        {"q": "Xanax", "item_id": 206, "name": "Xanax"},
+        {"q": "Donator Pack", "item_id": 62, "name": "Donator Pack"},
+        {"q": "Feathery Hotel Coupon", "item_id": 366, "name": "Feathery Hotel Coupon"},
+        {"q": "Erotic DVD", "item_id": 294, "name": "Erotic DVD"},
+        {"q": "Can of Red Cow", "item_id": 533, "name": "Can of Red Cow"},
+        {"q": "Bottle of Beer", "item_id": 180, "name": "Bottle of Beer"},
+        {"q": "Morphine", "item_id": 66, "name": "Morphine"},
+        {"q": "First Aid Kit", "item_id": 67, "name": "First Aid Kit"},
+        {"q": "Lion Plushie", "item_id": 258, "name": "Lion Plushie"},
+        {"q": "Dahlia", "item_id": 260, "name": "Dahlia"},
+    ]
     try:
         # Make sure the item catalog has something to search.
         existing = find_catalog_items("Xanax", 1)
@@ -3993,34 +4007,50 @@ def quick_setup():
         pass
     stamp = now_iso()
     with db() as conn:
-        for q in popular:
+        for pop in popular:
+            q = pop["q"]
             try:
                 matches = find_catalog_items(q, 8)
-                if not matches:
-                    skipped.append(q)
-                    continue
-                # Prefer exact/contains matches and avoid random unrelated results.
-                ql = q.lower()
                 chosen = None
-                for m in matches:
-                    nm = str(m.get("name") or "").lower()
-                    if ql == nm or ql in nm:
-                        chosen = m
-                        break
-                chosen = chosen or matches[0]
+                if matches:
+                    # Prefer exact/contains matches and avoid random unrelated results.
+                    ql = q.lower()
+                    for m in matches:
+                        nm = str(m.get("name") or "").lower()
+                        if ql == nm or ql in nm:
+                            chosen = m
+                            break
+                    chosen = chosen or matches[0]
+                if not chosen:
+                    chosen = {"item_id": pop["item_id"], "name": pop["name"]}
+                    # Seed catalog too, so the item shows properly even before Torn catalog refresh works.
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO item_catalog(item_id, name, item_type, buy_price, sell_value, market_value, updated_at)
+                            VALUES(?,?,?,?,?,?,?)
+                            ON CONFLICT(item_id) DO UPDATE SET
+                                name=COALESCE(item_catalog.name, excluded.name),
+                                updated_at=excluded.updated_at
+                            """,
+                            (int(chosen["item_id"]), chosen["name"], "Popular", None, None, None, stamp),
+                        )
+                    except Exception:
+                        pass
                 conn.execute(
                     """
                     INSERT INTO item_watchlist(torn_id, item_id, name, buy_zone, sell_zone, enabled, created_at, updated_at)
                     VALUES(?,?,?,?,?,?,?,?)
                     ON CONFLICT(torn_id, item_id) DO UPDATE SET
+                        name=excluded.name,
                         enabled=1,
                         updated_at=excluded.updated_at
                     """,
                     (torn_id, int(chosen["item_id"]), chosen["name"], None, None, 1, stamp, stamp),
                 )
                 added.append({"item_id": int(chosen["item_id"]), "name": chosen["name"]})
-            except Exception:
-                skipped.append(q)
+            except Exception as exc:
+                skipped.append(f"{q}: {exc}")
     enable_auto_scan(torn_id, immediate=True)
     try:
         perform_stock_scan_for_user(torn_id, reason="quick_setup")
@@ -4034,7 +4064,7 @@ def quick_setup():
         scan_travel_profit_for_user(torn_id, reason="quick_setup")
     except Exception:
         pass
-    return jsonify({"ok": True, "added": added, "skipped": skipped, "message": f"Quick setup complete. Added {len(added)} watched items and started backend scanning."})
+    return jsonify({"ok": True, "added": added, "skipped": skipped, "message": f"Quick setup complete. Added/updated {len(added)} popular watched items and started backend scanning."})
 
 
 @app.get("/api/settings")
