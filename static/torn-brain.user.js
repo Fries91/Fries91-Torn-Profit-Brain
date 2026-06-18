@@ -917,13 +917,21 @@
   }
 
   async function quickSetup() {
-    const msg = el('tb-quick-msg');
-    if (msg) msg.innerHTML = '<span class="tb-warn">Running Quick Setup: adding popular watched items and starting backend scanner...</span>';
+    const msg = el('tb-quick-msg') || el('tb-item-msg');
+    const startedFromTab = activeTab;
+    if (msg) msg.innerHTML = '<span class="tb-warn">Adding popular watched items and starting backend scanner...</span>';
     try {
       const data = await api('/api/quick-setup', { method:'POST', body: '{}' });
-      if (msg) msg.innerHTML = '<span class="tb-ok">' + escapeHtml(data.message || 'Quick Setup complete.') + '</span>';
+      const added = Array.isArray(data.added) ? data.added.length : 0;
+      const skipped = Array.isArray(data.skipped) ? data.skipped.length : 0;
+      const text = data.message || ('Quick Setup complete. Added/updated ' + added + ' popular items.');
+      if (msg) msg.innerHTML = '<span class="tb-ok">' + escapeHtml(text + (skipped ? (' Skipped ' + skipped + '.') : '')) + '</span>';
       await refreshState(true);
-      setTimeout(() => renderOverviewLive(), 800);
+      setTimeout(() => {
+        if (startedFromTab === 'Item Market') renderItemMarket();
+        else if (startedFromTab === 'Stock Brain') renderStockBrain();
+        else renderOverviewLive();
+      }, 500);
     } catch (e) {
       if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
     }
