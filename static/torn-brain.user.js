@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.11-stockpatterns
-// @description  Lite self-learning Torn profit app. Step 10.11: stock pattern engine with bounce, early turn, risky dip, breakout, and move-money scoring.
+// @version      1.10.13-stockpatterns
+// @description  Lite self-learning Torn profit app. Step 10.13: stock pattern engine with bounce, early turn, risky dip, breakout, and move-money scoring.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -591,7 +591,7 @@
         onload: (res) => {
           let data;
           try { data = JSON.parse(res.responseText || '{}'); }
-          catch (_) { data = { ok: false, error: 'Bad server response from Render. Check /health and deploy logs.' }; }
+          catch (_) { data = { ok: false, error: 'Backend error from Render. Open /health to see the exact error. Check /health and deploy logs.' }; }
           if (res.status < 200 || res.status >= 300 || !data.ok) {
             const err = new Error((data && data.error) || ('Server returned HTTP ' + res.status));
             err.status = res.status;
@@ -690,7 +690,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.12</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.13</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
