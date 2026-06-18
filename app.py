@@ -892,14 +892,10 @@ def init_db():
     if USE_POSTGRES:
         with db() as conn:
             conn.executescript(_postgres_schema())
-            try:
-                conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN source TEXT DEFAULT 'market'")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN last_error TEXT")
-            except Exception:
-                pass
+            # PostgreSQL-safe migrations: IF NOT EXISTS avoids aborted transactions
+            # from duplicate-column errors on Render deploys.
+            conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'market'")
+            conn.execute("ALTER TABLE item_market_snapshots ADD COLUMN IF NOT EXISTS last_error TEXT")
         return
     os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
     with db() as conn:
@@ -914,7 +910,13 @@ def init_db():
             pass
 
 
-init_db()
+SCHEMA_BOOT_ERROR = None
+try:
+    init_db()
+except Exception as _schema_ex:
+    # Let /health still come online so Render/userscript can show the real problem.
+    SCHEMA_BOOT_ERROR = str(_schema_ex)
+
 
 # Step 10.2: lightweight user feedback for prediction quality.
 def init_step_10_2_db():
@@ -993,7 +995,11 @@ def init_step_10_2_db():
     with db() as conn:
         conn.executescript(script)
 
-init_step_10_2_db()
+try:
+    init_step_10_2_db()
+except Exception as _schema_ex:
+    SCHEMA_BOOT_ERROR = (str(SCHEMA_BOOT_ERROR) + " | " if SCHEMA_BOOT_ERROR else "") + str(_schema_ex)
+
 
 # Step 10.3: defensive runtime migrations.
 # Existing PostgreSQL databases created before Step 10 may be missing newer tables.
@@ -1136,7 +1142,7 @@ except Exception:
 
 @app.before_request
 def _tb_runtime_migration_guard():
-    if request.path.startswith('/api/') or request.path in ('/', '/health'):
+    if request.path.startswith('/api/') or request.path == '/':
         ensure_runtime_migrations()
 
 
@@ -3976,7 +3982,15 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.12-server-json-fix", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({
+        "ok": SCHEMA_BOOT_ERROR is None,
+        "time": now_iso(),
+        "version": "step10.13-backend-boot-fix",
+        "database": "postgres" if USE_POSTGRES else "sqlite",
+        "pg_driver": PG_DRIVER if USE_POSTGRES else None,
+        "schema_boot_error": SCHEMA_BOOT_ERROR,
+        "migrations": "runtime_schema_guard_active"
+    })
 
 
 @app.get("/static/<path:filename>")
