@@ -2,7 +2,7 @@
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
 // @version      1.10.1-learning-visibility
-// @description  Lite self-learning Torn profit app. Step 10.1: focused Stock, Item, Travel plus visible global/private stock learning stats.
+// @description  Lite self-learning Torn profit app. Step 10.2.2: focused Stock, Item, Travel plus visible global/private stock learning stats.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -338,7 +338,7 @@
       #tb-icon { bottom: 72px; left: 14px; width: 34px; height: 34px; font-size: 15px; }
     }
 
-    /* Step 10.1 Stock Learning Focus: performance-first overrides */
+    /* Step 10.2.2 Stock Learning Focus: performance-first overrides */
     #tb-panel, #tb-icon, .tb-card, .tb-head, .tb-tabs, .tb-tab, .tb-btn, .tb-close { animation: none !important; transition: none !important; }
     #tb-panel:before, .tb-head:after, .tb-scan:after { display: none !important; }
     #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: rgba(5,10,7,.98) !important; }
@@ -607,6 +607,38 @@
     `;
   }
 
+
+
+  function dataStrengthLabel(samples) {
+    const n = Number(samples || 0);
+    if (n >= 500) return 'High';
+    if (n >= 80) return 'Medium';
+    if (n >= 15) return 'Low+';
+    return 'Learning';
+  }
+
+  function riskLabel(signal, confidence, strength) {
+    const s = String(signal || '').toUpperCase();
+    const c = Number(confidence || 0);
+    if ((s === 'WAIT' || s === 'HOLD' || s === 'WATCH') && c < 65) return 'WAIT';
+    if (c >= 78 && (strength === 'High' || strength === 'Medium')) return 'SAFE';
+    if (c >= 60) return 'GOOD';
+    if (['BUY','GO','PICK','SELL'].includes(s)) return 'RISKY';
+    return 'LEARNING';
+  }
+
+  function whyBox(title, lines) {
+    return `<details class="tb-card"><summary><b>Why this prediction?</b> ${escapeHtml(title || '')}</summary><div class="tb-muted" style="margin-top:8px;">${(lines || []).filter(Boolean).map(x => '• ' + escapeHtml(x)).join('<br>')}</div></details>`;
+  }
+
+  async function sendFeedback(module, target, feedback, context) {
+    try {
+      const data = await api('/api/feedback', { method:'POST', body: JSON.stringify({ module, target, feedback, context: context || {} }) });
+      return data.message || 'Feedback saved.';
+    } catch (e) {
+      return e.message;
+    }
+  }
   function renderLogin() {
     return `
       <div class="tb-card">
@@ -621,7 +653,7 @@
       <div class="tb-card">
         <h3>Lite Focus Includes</h3>
         <div class="tb-muted">Lite mode: fewer animations, smaller floating movable AI🫰 icon, backend-first display, and only Stock Brain, Item Market, and Travel Profit prediction.</div>
-        <div class="tb-scan">Stock + Item + Travel watcher active · smoother lite backend scanning</div>
+        <div class="tb-scan">Stock + Item + Travel watcher active · quick setup and privacy-first learning</div>
       </div>
     `;
   }
@@ -635,68 +667,70 @@
       dashboard = await api('/api/dashboard');
       const u = dashboard.user || state.user || {};
       const auto = dashboard.auto_scan || state.auto_scan || {};
-      const best = dashboard.best_move || {};
       const stock = dashboard.stock_pick || {};
       const learn = dashboard.stock_learning || {};
       const travel = dashboard.travel_best || {};
       const items = dashboard.items || [];
-      const alerts = dashboard.latest_alerts || [];
+      const health = dashboard.health || {};
+      const ds = dashboard.data_strength || {};
+      const bestItem = items[0] || null;
+      const stockStrength = ds.stock || dataStrengthLabel((learn.global_results_checked || 0) + (learn.user_stock_snapshots || 0));
+      const itemStrength = ds.item || dataStrengthLabel(bestItem?.stats?.count7 || 0);
+      const travelStrength = ds.travel || dataStrengthLabel(dashboard.travel_snapshot_count || 0);
+      const stockRisk = riskLabel('PICK', stock.confidence, stockStrength);
+      const itemRisk = bestItem ? riskLabel(bestItem.signal, 70, itemStrength) : 'LEARNING';
+      const travelRisk = travel ? riskLabel(travel.signal, travel.arrival_chance, travelStrength) : 'LEARNING';
       body.innerHTML = `
         <div class="tb-card tb-dashboard-card">
-          <div class="tb-hero">
-            <div class="tb-hero-main">
-              <div class="tb-hero-label"><span class="tb-status-dot"></span>Best Move Right Now</div>
-              <div class="tb-hero-title">${escapeHtml(best.label || 'Learning')}</div>
-              <div class="tb-hero-detail">${escapeHtml(best.detail || 'Waiting for more backend snapshots')}</div>
-            </div>
-            <span class="tb-pill ${signalClass(best.signal)}">${escapeHtml(best.signal || 'WATCH')}</span>
+          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.2 Smooth</span></h3>
+          <div class="tb-muted">Focused on Stock, Item Market, and Travel Profit only. Backend does the watching so PDA stays smooth.</div>
+          <div class="tb-actions">
+            <button class="tb-btn" id="tb-quick-setup">Quick Setup</button>
+            <button class="tb-btn" id="tb-overview-refresh">Refresh</button>
           </div>
-          <div class="tb-refresh-line">Backend-first display · last scan ${escapeHtml(shortTime(auto.last_scan_at))} · next ${escapeHtml(shortTime(auto.next_scan_at))}</div>
+          <div class="tb-muted" id="tb-quick-msg">Watcher: ${escapeHtml(health.watcher || (auto.enabled ? 'Running' : 'Off'))} · Last scan ${escapeHtml(shortTime(health.last_scan || auto.last_scan_at))} · DB ${escapeHtml(health.database || 'connected')}</div>
         </div>
         <div class="tb-kpi-grid">
-          ${kpi('Stock Pick', stock.acronym || 'Learning', stock.confidence ? 'Confidence ' + Number(stock.confidence).toFixed(0) + '%' : 'Need snapshots')}
-          ${kpi('Item Market', (items[0] && items[0].name) || 'Watching', items[0] ? ((items[0].signal || 'WATCH') + ' · ' + (items[0].latest?.lowest_price ? fmtMoney(items[0].latest.lowest_price) : 'learning')) : 'Add watched items')}
-          ${kpi('Travel', travel.signal || 'WAITING', travel.country ? travel.country + ' · ' + travel.item_name : 'Need route data')}
-          ${kpi('Stock Learning', fmtInt(learn.global_results_checked || 0), (learn.global_win_rate == null ? 'Building history' : ('Win rate ' + Number(learn.global_win_rate).toFixed(0) + '%')))}
+          <div class="tb-kpi"><small>📈 Best Stock Move</small><strong>${escapeHtml(stock.acronym || 'Learning')}</strong><span>${stock.confidence ? 'Confidence ' + Number(stock.confidence).toFixed(0) + '% · ' + stockRisk : 'Need snapshots'}</span><span>Data: ${escapeHtml(stockStrength)}</span></div>
+          <div class="tb-kpi"><small>💰 Best Item Move</small><strong>${escapeHtml(bestItem?.name || 'Add items')}</strong><span>${bestItem ? (escapeHtml(bestItem.signal || 'WATCH') + ' · ' + (bestItem.latest?.lowest_price ? fmtMoney(bestItem.latest.lowest_price) : 'learning') + ' · ' + itemRisk) : 'Use Quick Setup'}</span><span>Data: ${escapeHtml(itemStrength)}</span></div>
+          <div class="tb-kpi"><small>✈️ Best Travel Move</small><strong>${escapeHtml(travel?.country || 'Learning')}</strong><span>${travel?.item_name ? escapeHtml(travel.item_name) + ' · ' + fmtMoney(travel.estimated_profit) : 'Need route data'}</span><span>${travel?.signal ? escapeHtml(travel.signal) + ' · ' + travelRisk : 'Data: ' + escapeHtml(travelStrength)}</span></div>
+          <div class="tb-kpi"><small>🧠 Learning</small><strong>${fmtInt(learn.global_results_checked || 0)} results</strong><span>${learn.global_win_rate == null ? 'Win rate learning' : 'Win rate ' + Number(learn.global_win_rate).toFixed(1) + '%'}</span><span>Your private snapshots: ${fmtInt(learn.user_stock_snapshots || 0)}</span></div>
         </div>
+        ${whyBox('Dashboard', [
+          stock.acronym ? 'Stock uses live score, 24h/7d ranges, global prediction outcomes, and your private stock history when available.' : 'Stock Brain needs snapshots before it can choose strongly.',
+          bestItem ? 'Item Market compares current price to learned buy/sell zones and recent movement.' : 'Quick Setup adds popular watched items so item predictions can start.',
+          travel?.country ? 'Travel ranks routes by estimated profit, travel time, and arrival chance.' : 'Travel Profit improves after item and route snapshots build.',
+          'Data Strength tells users how much history is behind the prediction.'
+        ])}
         <div class="tb-card">
-          <h3>Stock Learning Visibility</h3>
+          <h3>Scan Health</h3>
           <div class="tb-grid">
-            <div><span class="tb-pill">Global Results</span><br>${fmtInt(learn.global_results_checked || 0)} checked</div>
-            <div><span class="tb-pill">Global Win Rate</span><br>${learn.global_win_rate == null ? 'Learning' : Number(learn.global_win_rate).toFixed(1) + '%'}</div>
-            <div><span class="tb-pill">Stocks Learned</span><br>${fmtInt(learn.global_stocks_learned || 0)}</div>
-            <div><span class="tb-pill">Your Snapshots</span><br>${fmtInt(learn.user_stock_snapshots || 0)} private</div>
+            <div><span class="tb-pill">Watcher</span><br>${escapeHtml(health.watcher || 'Starting')}</div>
+            <div><span class="tb-pill">Last Scan</span><br>${escapeHtml(shortTime(health.last_scan || auto.last_scan_at))}</div>
+            <div><span class="tb-pill">Next Scan</span><br>${escapeHtml(shortTime(health.next_scan || auto.next_scan_at))}</div>
+            <div><span class="tb-pill">Scans</span><br>${escapeHtml(auto.scans_completed || 0)}</div>
           </div>
-          <div class="tb-muted">${escapeHtml(learn.shared_note || 'Global prediction outcomes help everyone; personal holdings stay private.')}</div>
-        </div>
-        <div class="tb-card">
-          <h3>Quick Market Watch</h3>
-          <div class="tb-compact-list">
-            ${(items || []).slice(0,4).map(it => `<div class="tb-compact-row"><b>${escapeHtml(it.name)}</b> <span class="${signalClass(it.signal)}">${escapeHtml(it.signal)}</span><br><span class="tb-muted">Current ${it.latest?.lowest_price ? fmtMoney(it.latest.lowest_price) : 'waiting'} · buy zone ${it.buy_zone ? fmtMoney(it.buy_zone) : 'auto'}</span></div>`).join('') || '<div class="tb-muted">Add watched items in Item Market to fill this section.</div>'}
-          </div>
-        </div>
-        <div class="tb-card">
-          <h3>Quiet Signals</h3>
-          <div class="tb-muted">No popups. This lite version keeps market signals inside the overlay so it opens smoother.</div>
-          <div class="tb-compact-list">
-            ${(alerts || []).slice(0,3).map(a => `<div class="tb-compact-row"><b>${escapeHtml(a.title)}</b><br><span class="tb-muted">${escapeHtml(a.body)}</span></div>`).join('') || '<div class="tb-muted">No stock, item, or travel signals yet.</div>'}
-          </div>
-        </div>
-        <div class="tb-card">
-          <h3>Status</h3>
-          <div class="tb-grid">
-            <div><span class="tb-pill">User</span><br>${escapeHtml(u.name)} [${escapeHtml(u.torn_id)}]</div>
-            <div><span class="tb-pill">Signals</span><br>${escapeHtml(dashboard.unread_alerts || 0)} saved</div>
-            <div><span class="tb-pill">Auto Scanner</span><br>${auto.enabled ? 'Running' : 'Off'} · ${escapeHtml(auto.scans_completed || 0)} scans</div>
-            <div><span class="tb-pill">Server</span><br>${escapeHtml(shortTime(dashboard.server_time))}</div>
-          </div>
-          <div class="tb-sticky-actions"><button class="tb-btn" id="tb-overview-refresh">Refresh Dashboard</button></div>
+          ${health.last_error ? `<div class="tb-err">Last issue: ${escapeHtml(health.last_error)}</div>` : '<div class="tb-muted">Backend scanner looks good.</div>'}
         </div>
       `;
       el('tb-overview-refresh')?.addEventListener('click', () => renderOverviewLive());
+      el('tb-quick-setup')?.addEventListener('click', quickSetup);
       await refreshState(true);
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Overview</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-muted">The backend may be waking up. Try refresh again after Render responds.</div></div>`;
+    }
+  }
+
+  async function quickSetup() {
+    const msg = el('tb-quick-msg');
+    if (msg) msg.innerHTML = '<span class="tb-warn">Running Quick Setup: adding popular watched items and starting backend scanner...</span>';
+    try {
+      const data = await api('/api/quick-setup', { method:'POST', body: '{}' });
+      if (msg) msg.innerHTML = '<span class="tb-ok">' + escapeHtml(data.message || 'Quick Setup complete.') + '</span>';
+      await refreshState(true);
+      setTimeout(() => renderOverviewLive(), 800);
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tb-err">' + escapeHtml(e.message) + '</span>';
     }
   }
 
@@ -816,6 +850,17 @@
             <input class="tb-input" id="set-item-buy-discount" placeholder="Default item buy discount %" value="${escapeHtml(s.item_default_buy_discount_pct || '3')}">
             <input class="tb-input" id="set-item-sell-markup" placeholder="Default item sell markup %" value="${escapeHtml(s.item_default_sell_markup_pct || '6')}">
           </div>
+
+          <label class="tb-muted">Compact mode</label>
+          <select class="tb-select" id="set-compact">
+            <option value="true" ${s.compact_mode !== 'false' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.compact_mode === 'false' ? 'selected' : ''}>false</option>
+          </select>
+          <label class="tb-muted">Accept ToS / Privacy Note</label>
+          <select class="tb-select" id="set-tos">
+            <option value="true" ${s.tos_accepted === 'true' ? 'selected' : ''}>true</option>
+            <option value="false" ${s.tos_accepted !== 'true' ? 'selected' : ''}>false</option>
+          </select>
           <label class="tb-muted">Travel alerts enabled</label>
           <select class="tb-select" id="set-travel-alerts">
             <option value="true" ${s.travel_alerts_enabled !== 'false' ? 'selected' : ''}>true</option>
@@ -830,9 +875,11 @@
           <div class="tb-muted" id="tb-settings-msg"></div>
         </div>
         <div class="tb-card">
-          <h3>API Use & Torn Compliance</h3>
+          <h3>ToS & Privacy Note</h3>
           <div class="tb-muted">
-            This app only uses Torn's read-only API. It stores your key on your own Render app so it can read data for analysis. It does not request your Torn password, does not auto-buy/sell, and does not perform in-game actions.
+            <b>AI🫰 Fries91 Torn Brain is in active development.</b> It gives predictions and suggestions only. It does not guarantee profit, does not auto-buy, does not auto-sell, and does not perform actions on your Torn account.<br><br>
+            <b>Privacy:</b> your API key is used only to read Torn data for analysis. Personal holdings and personal stock history stay private. Shared learning uses anonymous market outcomes, item/travel price history, prediction accuracy, and aggregate signals to improve predictions for everyone.<br><br>
+            By using it, users agree it is experimental and should be treated as decision support, not certainty.
           </div>
         </div>
       `;
@@ -861,6 +908,8 @@
           travel_min_profit: el('set-travel-min-profit')?.value || '50000',
           travel_min_arrival_chance: el('set-travel-min-chance')?.value || '45',
           travel_items_per_trip: el('set-travel-items')?.value || '29',
+          compact_mode: el('set-compact')?.value || 'true',
+          tos_accepted: el('set-tos')?.value || 'false',
           // keep unused modules quiet on the backend
           points_alerts_enabled: 'false',
           enemy_alerts_enabled: 'false'
@@ -918,7 +967,7 @@
       const learn = data.stock_learning || {};
       body.innerHTML = `
         <div class="tb-card">
-          <h3>Stock Brain <span class="tb-pill tb-ai-pill">Global Learning</span></h3>
+          <h3>Stock Brain <span class="tb-pill tb-ai-pill">User Friendly</span></h3>
           <div class="tb-muted">This uses shared stock snapshots. The backend auto scanner starts after login and keeps collecting data without making TornPDA do the heavy work.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-auto-start">Start Auto Watcher</button>
@@ -958,11 +1007,18 @@
         </div>`}
         <div class="tb-card">
           <h3>Top Ranked Stocks</h3>
-          ${ranked.length ? ranked.map(r => `
-            <div class="tb-mini-row">
-              <span><b>${escapeHtml(r.acronym)}</b> <span class="tb-muted">${escapeHtml(r.name)}</span><br><span class="tb-muted">base ${escapeHtml(r.base_score ?? r.score)} · history ${Number(r.history_bonus || 0) >= 0 ? '+' : ''}${escapeHtml(r.history_bonus || 0)} · global ${escapeHtml(r.history_global_count || 0)} · user ${escapeHtml(r.history_user_count || 0)}</span></span>
-              <span>${fmtMoney(r.current_price)} · score ${escapeHtml(r.score)} · ${escapeHtml(r.confidence)}%</span>
-            </div>`).join('') : `<div class="tb-muted">No ranked data yet. Run a scan first.</div>`}
+          ${ranked.length ? ranked.map(r => {
+            const strength = dataStrengthLabel((Number(r.history_global_count || 0) + Number(r.history_user_count || 0)) * 10);
+            const risk = riskLabel('PICK', r.confidence, strength);
+            return `
+            <div class="tb-market-row">
+              <div class="tb-market-title"><b>${escapeHtml(r.acronym)}</b> <span>${fmtMoney(r.current_price)}</span></div>
+              <div class="tb-muted">${escapeHtml(r.name)} · score ${escapeHtml(r.score)} · confidence ${escapeHtml(r.confidence)}% · risk ${escapeHtml(risk)} · data ${escapeHtml(strength)}</div>
+              <div class="tb-muted">base ${escapeHtml(r.base_score ?? r.score)} · history ${Number(r.history_bonus || 0) >= 0 ? '+' : ''}${escapeHtml(r.history_bonus || 0)} · global ${escapeHtml(r.history_global_count || 0)} · user ${escapeHtml(r.history_user_count || 0)}</div>
+              ${whyBox(r.acronym, [r.reason || 'Best score from available snapshots', 'Base score comes from current market position and movement.', 'History bonus comes from global outcomes plus your private stock history if available.', 'Risk/data labels help avoid trusting weak early data too much.'])}
+              <div class="tb-actions"><button class="tb-btn tb-feedback" data-module="stock" data-target="${escapeHtml(r.acronym)}" data-feedback="useful">👍 Useful</button><button class="tb-btn tb-feedback tb-danger" data-module="stock" data-target="${escapeHtml(r.acronym)}" data-feedback="bad">👎 Bad Call</button></div>
+            </div>`;
+          }).join('') : `<div class="tb-muted">No ranked data yet. Run a scan first.</div>`}
         </div>
         <div class="tb-card">
           <h3>Your Stock History Learning</h3>
@@ -981,10 +1037,22 @@
       el('tb-auto-start')?.addEventListener('click', startAutoWatcher);
       el('tb-scan-stocks')?.addEventListener('click', scanStocksNow);
       el('tb-stock-history')?.addEventListener('click', renderStockHistory);
+      bindFeedbackButtons();
     } catch (e) {
       body.innerHTML = `<div class="tb-card"><h3>Stock Brain</h3><div class="tb-err">${escapeHtml(e.message)}</div><div class="tb-actions"><button class="tb-btn" id="tb-scan-stocks">Try Scan</button></div></div>`;
       el('tb-scan-stocks')?.addEventListener('click', scanStocksNow);
     }
+  }
+
+
+  function bindFeedbackButtons() {
+    document.querySelectorAll('.tb-feedback').forEach(btn => btn.addEventListener('click', async () => {
+      const old = btn.textContent;
+      btn.textContent = 'Saving...';
+      const msg = await sendFeedback(btn.dataset.module, btn.dataset.target, btn.dataset.feedback, { tab: activeTab });
+      btn.textContent = msg.includes('saved') || msg.includes('Saved') ? 'Saved ✓' : old;
+      setTimeout(() => { btn.textContent = old; }, 1500);
+    }));
   }
 
   async function startAutoWatcher() {
@@ -1059,7 +1127,7 @@
           </div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-item-search">Find</button>
-            <button class="tb-btn" id="tb-item-add">Add Watch</button>
+            <button class="tb-btn" id="tb-item-add">Add Watch</button><button class="tb-btn" id="tb-popular-items">Add Popular Items</button>
             <button class="tb-btn" id="tb-item-scan">Scan Now</button>
           </div>
           <div class="tb-muted" id="tb-item-msg">Global item snapshots stored: ${escapeHtml(data.snapshot_count || 0)}</div>
@@ -1082,6 +1150,7 @@
       `;
       el('tb-item-search')?.addEventListener('click', searchItems);
       el('tb-item-add')?.addEventListener('click', addItemWatch);
+      el('tb-popular-items')?.addEventListener('click', quickSetup);
       el('tb-item-scan')?.addEventListener('click', scanItemsNow);
       body.querySelectorAll('[data-unwatch]').forEach(btn => btn.addEventListener('click', async () => {
         await api('/api/items/unwatch', { method:'POST', body: JSON.stringify({ item_id: btn.dataset.unwatch }) });
