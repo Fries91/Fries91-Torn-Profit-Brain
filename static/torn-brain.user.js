@@ -591,7 +591,7 @@
         onload: (res) => {
           let data;
           try { data = JSON.parse(res.responseText || '{}'); }
-          catch (_) { data = { ok: false, error: 'Bad server response from Render.' }; }
+          catch (_) { data = { ok: false, error: 'Bad server response from Render. Check /health and deploy logs.' }; }
           if (res.status < 200 || res.status >= 300 || !data.ok) {
             const err = new Error((data && data.error) || ('Server returned HTTP ' + res.status));
             err.status = res.status;
@@ -690,7 +690,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.11</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.12</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -824,7 +824,7 @@
       </div>
       <div class="tb-card">
         <h3>Brain Color Includes</h3>
-        <div class="tb-muted">Brain Color plus Stock Pattern Engine: bounce setups, early turns, risky dips, breakouts, and 24h move-money review. No page scraping or auto-buying.</div>
+        <div class="tb-muted">Server-safe Stock Pattern Engine: bounce setups, early turns, risky dips, breakouts, and clear backend errors. No page scraping or auto-buying.</div>
         <div class="tb-scan">Stock + Item + Travel watcher active · quick setup and privacy-first learning</div>
       </div>
     `;
