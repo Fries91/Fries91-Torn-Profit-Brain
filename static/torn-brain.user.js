@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.9-itempopup
-// @description  Lite self-learning Torn profit app. Step 10.9: item buy-price popups with close, buy link, max-amount prefill attempt, and popup setting.
+// @version      1.10.11-stockpatterns
+// @description  Lite self-learning Torn profit app. Step 10.11: stock pattern engine with bounce, early turn, risky dip, breakout, and move-money scoring.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -368,6 +368,8 @@
     .tb-mini-row { display:flex; justify-content:space-between; gap:8px; border-top:1px solid rgba(74,222,128,.12); padding:7px 0; font-size:12px; }
     .tb-mini-row:first-child { border-top:0; }
     .tb-market-row { border-top:1px solid rgba(74,222,128,.12); padding:9px 0; }
+    .tb-pattern-row { border:1px solid rgba(168,85,247,.22); background:linear-gradient(135deg, rgba(9,20,36,.90), rgba(36,18,60,.82)); border-radius:14px; padding:10px; margin:8px 0; box-shadow:0 0 18px rgba(34,197,94,.08); }
+    .tb-pattern-label { font-weight:1000; color:#facc15; text-shadow:0 0 10px rgba(250,204,21,.32); }
     .tb-market-title { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; font-size:13px; }
     .tb-signal-buy { color:#86efac; text-shadow:0 0 10px rgba(34,197,94,.35); }
     .tb-signal-sell { color:#fef08a; text-shadow:0 0 10px rgba(250,204,21,.25); }
@@ -688,7 +690,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.9</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.11</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -822,7 +824,7 @@
       </div>
       <div class="tb-card">
         <h3>Brain Color Includes</h3>
-        <div class="tb-muted">Brain Color: neon green, purple, gold, and blue Torn Brain look; no external hero image file; fewer animations; backend-first display; only Stock Brain, Item Market, and Travel Profit.</div>
+        <div class="tb-muted">Brain Color plus Stock Pattern Engine: bounce setups, early turns, risky dips, breakouts, and 24h move-money review. No page scraping or auto-buying.</div>
         <div class="tb-scan">Stock + Item + Travel watcher active · quick setup and privacy-first learning</div>
       </div>
     `;
@@ -1311,6 +1313,7 @@
       const ranked = data.ranked || [];
       const learn = data.stock_learning || {};
       const stockMove = data.stock_move || {};
+      const patterns = data.stock_patterns || [];
       body.innerHTML = `
         <div class="tb-card">
           <h3>Stock Brain <span class="tb-pill tb-ai-pill">User Friendly</span></h3>
@@ -1332,6 +1335,18 @@
             <div><span class="tb-pill">Your Private Snapshots</span><br>${fmtInt(learn.user_stock_snapshots || 0)}</div>
           </div>
           <div class="tb-muted">${escapeHtml(learn.shared_note || 'Global prediction outcomes help everyone. Personal holdings stay private.')}</div>
+        </div>
+        <div class="tb-card">
+          <h3>Pattern Watcher <span class="tb-pill tb-ai-pill">New</span></h3>
+          <div class="tb-muted">This watches stored stock price snapshots for repeated support, turns, momentum, risky dips, and overextended highs. It uses API/back-end snapshots only; no page scraping.</div>
+          ${patterns.length ? patterns.slice(0,6).map(pt => `
+            <div class="tb-pattern-row">
+              <div class="tb-market-title"><b>${escapeHtml(pt.acronym)}</b> <span class="tb-pattern-label">${escapeHtml(pt.pattern_label || 'Learning Pattern')}</span></div>
+              <div class="tb-muted">confidence ${escapeHtml(pt.pattern_confidence || 0)}% · score ${escapeHtml(pt.pattern_score || 0)} · support touches ${escapeHtml(pt.support_touches || 0)}</div>
+              <div class="tb-muted">1h ${fmtPct(Number(pt.trend_1h_pct || 0))} · 6h ${fmtPct(Number(pt.trend_6h_pct || 0))} · 24h ${fmtPct(Number(pt.trend_24h_pct || 0))} · 7d position ${Math.round(Number(pt.position_7d || 0) * 100)}%</div>
+              <div class="tb-muted">${escapeHtml(pt.reason || 'Learning from stored pattern data.')}</div>
+            </div>
+          `).join('') : `<div class="tb-muted">No stored pattern results yet. Run Scan Now or start Auto Watcher.</div>`}
         </div>
         ${p ? `
         <div class="tb-card">
@@ -1360,9 +1375,10 @@
             return `
             <div class="tb-market-row">
               <div class="tb-market-title"><b>${escapeHtml(r.acronym)}</b> <span>${fmtMoney(r.current_price)}</span></div>
-              <div class="tb-muted">${escapeHtml(r.name)} · score ${escapeHtml(r.score)} · confidence ${escapeHtml(r.confidence)}% · risk ${escapeHtml(risk)} · data ${escapeHtml(strength)}</div>
-              <div class="tb-muted">base ${escapeHtml(r.base_score ?? r.score)} · history ${Number(r.history_bonus || 0) >= 0 ? '+' : ''}${escapeHtml(r.history_bonus || 0)} · global ${escapeHtml(r.history_global_count || 0)} · user ${escapeHtml(r.history_user_count || 0)}</div>
-              ${whyBox(r.acronym, [r.reason || 'Best score from available snapshots', 'Base score comes from current market position and movement.', 'History bonus comes from global outcomes plus your private stock history if available.', 'Risk/data labels help avoid trusting weak early data too much.'])}
+              <div class="tb-muted">${escapeHtml(r.name)} · <span class="tb-pattern-label">${escapeHtml(r.pattern_label || 'Learning Pattern')}</span> · score ${escapeHtml(r.score)} · confidence ${escapeHtml(r.confidence)}% · risk ${escapeHtml(risk)} · data ${escapeHtml(strength)}</div>
+              <div class="tb-muted">1h ${fmtPct(Number(r.change_1h_pct || 0))} · 6h ${fmtPct(Number(r.change_6h_pct || 0))} · 24h ${fmtPct(Number(r.change_24h_pct || 0))} · support ${escapeHtml(r.support_touches || 0)} touches</div>
+              <div class="tb-muted">position ${escapeHtml(r.price_position_score ?? 0)} · momentum ${escapeHtml(r.momentum_score ?? 0)} · bounce ${escapeHtml(r.bounce_score ?? 0)} · vol ${escapeHtml(r.volatility_score ?? 0)} · history ${Number(r.history_bonus || 0) >= 0 ? '+' : ''}${escapeHtml(r.history_bonus || 0)}</div>
+              ${whyBox(r.acronym, [r.reason || 'Best score from available snapshots', 'Pattern label shows the strongest current setup detected from stored prices.', 'Score combines price position, momentum, bounce/support, volatility, and history learning.', 'Risk/data labels help avoid trusting weak early data too much.'])}
               <div class="tb-actions"><button class="tb-btn tb-feedback" data-module="stock" data-target="${escapeHtml(r.acronym)}" data-feedback="useful">👍 Useful</button><button class="tb-btn tb-feedback tb-danger" data-module="stock" data-target="${escapeHtml(r.acronym)}" data-feedback="bad">👎 Bad Call</button></div>
             </div>`;
           }).join('') : `<div class="tb-muted">No ranked data yet. Run a scan first.</div>`}
