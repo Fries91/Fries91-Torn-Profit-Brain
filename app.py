@@ -1427,12 +1427,17 @@ def stock_learning_summary(torn_id: int):
 
 def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int, travel_samples: int, auto=None):
     """Overall visible brain strength for the Overview page.
-    This is not a guarantee of profit. It shows how much history + checked accuracy
-    + backend health the prediction brain currently has.
+    Step 10.8: this percentage is intentionally data-maturity based.
+    It should not hit 100% just because the backend is healthy or one early signal looks good.
+    More stored snapshots, checked results, and contributing users raise the cap over time.
     """
     try:
-        stock_samples = int(stock_learning.get("global_results_checked") or 0) + int(stock_learning.get("user_stock_snapshots") or 0)
+        stock_checked = int(stock_learning.get("global_results_checked") or 0)
+        user_stock_snaps = int(stock_learning.get("user_stock_snapshots") or 0)
+        stock_samples = stock_checked + user_stock_snaps
     except Exception:
+        stock_checked = 0
+        user_stock_snaps = 0
         stock_samples = 0
     try:
         item_samples = int(item_samples or 0)
@@ -1444,41 +1449,71 @@ def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int
         travel_samples = 0
 
     total_samples = stock_samples + item_samples + travel_samples
-    # Data score ramps up as real observations build. 2,000+ combined observations is considered strong.
-    info_score = min(100.0, (total_samples / 2000.0) * 100.0)
+
+    # Data maturity score: 100% requires a lot of stored information, not just a few scans.
+    # These caps keep the brain honest while it is still learning from users.
+    if total_samples <= 0:
+        info_score = 3.0
+    elif total_samples < 100:
+        info_score = 8.0 + (total_samples / 100.0) * 12.0       # up to 20
+    elif total_samples < 1000:
+        info_score = 20.0 + ((total_samples - 100) / 900.0) * 20.0 # up to 40
+    elif total_samples < 5000:
+        info_score = 40.0 + ((total_samples - 1000) / 4000.0) * 18.0 # up to 58
+    elif total_samples < 20000:
+        info_score = 58.0 + ((total_samples - 5000) / 15000.0) * 17.0 # up to 75
+    elif total_samples < 75000:
+        info_score = 75.0 + ((total_samples - 20000) / 55000.0) * 15.0 # up to 90
+    else:
+        info_score = min(100.0, 90.0 + ((total_samples - 75000) / 25000.0) * 10.0)
 
     win_rate = stock_learning.get("global_win_rate")
-    if win_rate is None:
-        accuracy_score = 35.0 if total_samples else 15.0
+    if win_rate is None or stock_checked < 25:
+        accuracy_score = 18.0 if total_samples < 100 else 30.0
     else:
-        # 50% win rate is neutral, 70%+ is excellent. Clamp so early noise doesn't overpromise.
         try:
             wr = float(win_rate)
         except Exception:
-            wr = 0.0
-        accuracy_score = max(20.0, min(100.0, 50.0 + ((wr - 50.0) * 1.7)))
+            wr = 50.0
+        # Early checked results are useful, but do not let accuracy dominate until there are many checked outcomes.
+        raw_accuracy = max(15.0, min(95.0, 50.0 + ((wr - 50.0) * 1.25)))
+        confidence_cap = min(95.0, 35.0 + (stock_checked / 500.0) * 60.0)
+        accuracy_score = min(raw_accuracy, confidence_cap)
 
     if auto and int(auto["last_ok"] or 0) == 1:
-        health_score = 100.0
+        health_score = 80.0
     elif auto:
-        health_score = 60.0
+        health_score = 45.0
     else:
-        health_score = 35.0
+        health_score = 20.0
 
     module_count = 0
-    if stock_samples > 0:
+    if stock_samples >= 25:
         module_count += 1
-    if item_samples > 0:
+    if item_samples >= 25:
         module_count += 1
-    if travel_samples > 0:
+    if travel_samples >= 25:
         module_count += 1
     balance_score = (module_count / 3.0) * 100.0
 
-    score = (info_score * 0.42) + (accuracy_score * 0.33) + (health_score * 0.15) + (balance_score * 0.10)
-    score = round(max(0.0, min(100.0, score)), 1)
-    if score >= 80:
+    # Users contribution is calculated below, but give it a placeholder here.
+    users_contributing = 0
+
+    score = (info_score * 0.62) + (accuracy_score * 0.18) + (health_score * 0.08) + (balance_score * 0.12)
+
+    # Hard maturity caps: prevents showing 100% while it is still learning.
+    maturity_cap = 15.0
+    if total_samples >= 100: maturity_cap = 28.0
+    if total_samples >= 1000: maturity_cap = 45.0
+    if total_samples >= 5000: maturity_cap = 62.0
+    if total_samples >= 20000: maturity_cap = 80.0
+    if total_samples >= 75000 and stock_checked >= 500: maturity_cap = 92.0
+    if total_samples >= 100000 and stock_checked >= 1000: maturity_cap = 100.0
+
+    score = round(max(0.0, min(score, maturity_cap, 100.0)), 1)
+    if score >= 85:
         label = "Sharp"
-    elif score >= 60:
+    elif score >= 65:
         label = "Strong"
     elif score >= 35:
         label = "Growing"
@@ -1501,12 +1536,16 @@ def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int
         users_contributing = 0
 
     reasons = []
-    if total_samples < 80:
-        reasons.append("Needs more saved snapshots to become reliable")
-    elif total_samples < 500:
-        reasons.append("Has early learning data, but still improving")
+    if total_samples < 100:
+        reasons.append("Very early learning: needs more stock, item, and travel snapshots")
+    elif total_samples < 1000:
+        reasons.append("Learning from early data, but not enough history for high confidence")
+    elif total_samples < 5000:
+        reasons.append("Growing data bank: predictions should start improving")
+    elif total_samples < 20000:
+        reasons.append("Solid history building, but still not fully matured")
     else:
-        reasons.append("Has a growing history of saved market observations")
+        reasons.append("Large stored history is improving the prediction brain")
     if win_rate is not None:
         reasons.append(f"Global stock win rate is {float(win_rate):.1f}%")
     if auto and int(auto["last_ok"] or 0) == 1:
@@ -1528,6 +1567,9 @@ def brain_strength_summary(torn_id: int, stock_learning: dict, item_samples: int
         "users_contributing": users_contributing,
         "global_win_rate": win_rate,
         "reason": " · ".join(reasons),
+        "maturity_cap": round(maturity_cap, 1),
+        "stock_checked": stock_checked,
+        "user_stock_snapshots": user_stock_snaps,
     }
 
 def stock_stats(acronym: str, current_price: float):
@@ -2012,7 +2054,9 @@ def maybe_create_item_signal(torn_id: int, watch, current_price, stats):
         reason = f"{watch['name']} reached its sell zone based on your tracker."
     if signal == "HOLD":
         return None
-    link = f"https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname={requests.utils.quote(str(watch['name']))}"
+    max_qty = int(stats.get("total_quantity") or stats.get("listing_count") or 0)
+    qty_param = f"&tbmax={max_qty}" if max_qty > 0 else ""
+    link = f"https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname={requests.utils.quote(str(watch['name']))}{qty_param}"
     created = now_iso()
     with db() as conn:
         # Avoid spamming the same item alert every scan; allow a fresh alert after 6 hours.
@@ -2036,7 +2080,7 @@ def maybe_create_item_signal(torn_id: int, watch, current_price, stats):
         )
         conn.execute(
             "INSERT INTO alerts(torn_id, alert_type, title, body, link, created_at) VALUES(?,?,?,?,?,?)",
-            (torn_id, f"item_{signal.lower()}", f"Item Market {signal}: {watch['name']}", reason + f" Current: ${int(current_price):,}", link, created),
+            (torn_id, f"item_{signal.lower()}", f"Item Market {signal}: {watch['name']}", reason + f" Current: ${int(current_price):,}. Max seen: {max_qty if max_qty > 0 else 'unknown'}.", link, created),
         )
     return {"signal": signal, "reason": reason, "link": link, "buy_zone": buy_zone, "sell_zone": sell_zone}
 
@@ -2081,6 +2125,8 @@ def scan_item_market_for_user(torn_id: int, reason: str = "auto"):
                         (w["item_id"], w["name"], m.get("lowest_price"), m.get("avg_price"), m.get("listing_count") or 0, m.get("total_quantity") or 0, source, last_error, torn_id, stamp),
                     )
                     stats = item_history_stats(int(w["item_id"]), m.get("lowest_price"))
+                    stats["total_quantity"] = int(m.get("total_quantity") or 0)
+                    stats["listing_count"] = int(m.get("listing_count") or 0)
                     sig = maybe_create_item_signal(torn_id, w, m.get("lowest_price"), stats)
                     if sig:
                         signals.append({"item_id": w["item_id"], "name": w["name"], **sig})
@@ -2098,6 +2144,8 @@ def scan_item_market_for_user(torn_id: int, reason: str = "auto"):
                             (w["item_id"], w["name"], fallback.get("lowest_price"), fallback.get("avg_price"), 0, 0, "catalog_fallback", msg, torn_id, stamp),
                         )
                         stats = item_history_stats(int(w["item_id"]), fallback.get("lowest_price"))
+                        stats["total_quantity"] = int(fallback.get("total_quantity") or 0)
+                        stats["listing_count"] = int(fallback.get("listing_count") or 0)
                         sig = maybe_create_item_signal(torn_id, w, fallback.get("lowest_price"), stats)
                         if sig:
                             signals.append({"item_id": w["item_id"], "name": w["name"], **sig})
@@ -3662,7 +3710,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.4-brain-strength",
+        "step": "10.9-item-buy-popup",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3671,7 +3719,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.5-stock-timer", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.9-item-buy-popup", "database": "postgres" if USE_POSTGRES else "sqlite", "migrations": "runtime_schema_guard_active"})
 
 
 @app.get("/static/<path:filename>")
@@ -3775,13 +3823,14 @@ def state():
             "SELECT COUNT(*) AS c FROM alerts WHERE torn_id=? AND is_read=0",
             (request.user["torn_id"],),
         ).fetchone()["c"]
+        item_popup_enabled = get_setting_for_user(conn, request.user["torn_id"], "item_popup_enabled", "true")
         auto = conn.execute(
             "SELECT enabled, last_scan_at, next_scan_at, last_ok, last_error, scans_completed FROM auto_scan_state WHERE torn_id=?",
             (request.user["torn_id"],),
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.4-brain-strength",
+        "step": "10.9-item-buy-popup",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -3790,9 +3839,10 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_10_4"
+            "lite_focus": "active_step_10_9"
         },
         "unread_alerts": unread,
+        "item_popup_enabled": item_popup_enabled,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
         "server_time": now_iso()
     })
@@ -3868,7 +3918,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.4-brain-strength",
+        "step": "10.9-item-buy-popup",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -3998,6 +4048,7 @@ def get_settings():
         "alerts_enabled": "true",
         "share_market_learning": "true",
         "item_alerts_enabled": "true",
+        "item_popup_enabled": "true",
         "item_default_buy_discount_pct": "3",
         "item_default_sell_markup_pct": "6",
         "points_alerts_enabled": "true",
@@ -4031,6 +4082,7 @@ def save_settings():
         "alerts_enabled",
         "share_market_learning",
         "item_alerts_enabled",
+        "item_popup_enabled",
         "item_default_buy_discount_pct",
         "item_default_sell_markup_pct",
         "points_alerts_enabled",
