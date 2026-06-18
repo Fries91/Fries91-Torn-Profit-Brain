@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.9.0-lite-focus
-// @description  Lite self-learning Torn profit app. Step 9: focused Stock, Item Market, and Travel Profit with smoother PDA UI.
+// @version      1.10.1-learning-visibility
+// @description  Lite self-learning Torn profit app. Step 10.1: focused Stock, Item, Travel plus visible global/private stock learning stats.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -338,7 +338,7 @@
       #tb-icon { bottom: 72px; left: 14px; width: 34px; height: 34px; font-size: 15px; }
     }
 
-    /* Step 9 Lite Focus: performance-first overrides */
+    /* Step 10.1 Stock Learning Focus: performance-first overrides */
     #tb-panel, #tb-icon, .tb-card, .tb-head, .tb-tabs, .tb-tab, .tb-btn, .tb-close { animation: none !important; transition: none !important; }
     #tb-panel:before, .tb-head:after, .tb-scan:after { display: none !important; }
     #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: rgba(5,10,7,.98) !important; }
@@ -637,6 +637,7 @@
       const auto = dashboard.auto_scan || state.auto_scan || {};
       const best = dashboard.best_move || {};
       const stock = dashboard.stock_pick || {};
+      const learn = dashboard.stock_learning || {};
       const travel = dashboard.travel_best || {};
       const items = dashboard.items || [];
       const alerts = dashboard.latest_alerts || [];
@@ -656,7 +657,17 @@
           ${kpi('Stock Pick', stock.acronym || 'Learning', stock.confidence ? 'Confidence ' + Number(stock.confidence).toFixed(0) + '%' : 'Need snapshots')}
           ${kpi('Item Market', (items[0] && items[0].name) || 'Watching', items[0] ? ((items[0].signal || 'WATCH') + ' · ' + (items[0].latest?.lowest_price ? fmtMoney(items[0].latest.lowest_price) : 'learning')) : 'Add watched items')}
           ${kpi('Travel', travel.signal || 'WAITING', travel.country ? travel.country + ' · ' + travel.item_name : 'Need route data')}
-          ${kpi('Alerts', String(dashboard.unread_alerts || 0), 'Quiet signals only')}
+          ${kpi('Stock Learning', fmtInt(learn.global_results_checked || 0), (learn.global_win_rate == null ? 'Building history' : ('Win rate ' + Number(learn.global_win_rate).toFixed(0) + '%')))}
+        </div>
+        <div class="tb-card">
+          <h3>Stock Learning Visibility</h3>
+          <div class="tb-grid">
+            <div><span class="tb-pill">Global Results</span><br>${fmtInt(learn.global_results_checked || 0)} checked</div>
+            <div><span class="tb-pill">Global Win Rate</span><br>${learn.global_win_rate == null ? 'Learning' : Number(learn.global_win_rate).toFixed(1) + '%'}</div>
+            <div><span class="tb-pill">Stocks Learned</span><br>${fmtInt(learn.global_stocks_learned || 0)}</div>
+            <div><span class="tb-pill">Your Snapshots</span><br>${fmtInt(learn.user_stock_snapshots || 0)} private</div>
+          </div>
+          <div class="tb-muted">${escapeHtml(learn.shared_note || 'Global prediction outcomes help everyone; personal holdings stay private.')}</div>
         </div>
         <div class="tb-card">
           <h3>Quick Market Watch</h3>
@@ -871,6 +882,16 @@
     const v = Number(n || 0);
     return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
   }
+  function fmtPlainPct(n) {
+    if (n === null || n === undefined || n === '') return 'Learning';
+    const v = Number(n || 0);
+    return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  }
+  function fmtInt(n) {
+    const v = Number(n || 0);
+    if (!isFinite(v)) return '0';
+    return Math.round(v).toLocaleString();
+  }
 
   function shortTime(s) {
     if (!s) return 'waiting';
@@ -894,6 +915,7 @@
       const data = await api('/api/stocks/brain');
       const p = data.pick;
       const ranked = data.ranked || [];
+      const learn = data.stock_learning || {};
       body.innerHTML = `
         <div class="tb-card">
           <h3>Stock Brain <span class="tb-pill tb-ai-pill">Global Learning</span></h3>
@@ -904,6 +926,16 @@
             <button class="tb-btn" id="tb-stock-history">Prediction History</button>
           </div>
           <div class="tb-muted" id="tb-stock-msg">Snapshots stored: ${escapeHtml(data.snapshot_count || 0)}</div>
+        </div>
+        <div class="tb-card">
+          <h3>Learning Used In Predictions</h3>
+          <div class="tb-grid">
+            <div><span class="tb-pill">Global Results</span><br>${fmtInt(learn.global_results_checked || 0)} checked</div>
+            <div><span class="tb-pill">Global Avg</span><br>${fmtPlainPct(learn.global_avg_result_pct)}</div>
+            <div><span class="tb-pill">Global Win Rate</span><br>${learn.global_win_rate == null ? 'Learning' : Number(learn.global_win_rate).toFixed(1) + '%'}</div>
+            <div><span class="tb-pill">Your Private Snapshots</span><br>${fmtInt(learn.user_stock_snapshots || 0)}</div>
+          </div>
+          <div class="tb-muted">${escapeHtml(learn.shared_note || 'Global prediction outcomes help everyone. Personal holdings stay private.')}</div>
         </div>
         ${p ? `
         <div class="tb-card">
@@ -928,9 +960,18 @@
           <h3>Top Ranked Stocks</h3>
           ${ranked.length ? ranked.map(r => `
             <div class="tb-mini-row">
-              <span><b>${escapeHtml(r.acronym)}</b> <span class="tb-muted">${escapeHtml(r.name)}</span></span>
+              <span><b>${escapeHtml(r.acronym)}</b> <span class="tb-muted">${escapeHtml(r.name)}</span><br><span class="tb-muted">base ${escapeHtml(r.base_score ?? r.score)} · history ${Number(r.history_bonus || 0) >= 0 ? '+' : ''}${escapeHtml(r.history_bonus || 0)} · global ${escapeHtml(r.history_global_count || 0)} · user ${escapeHtml(r.history_user_count || 0)}</span></span>
               <span>${fmtMoney(r.current_price)} · score ${escapeHtml(r.score)} · ${escapeHtml(r.confidence)}%</span>
             </div>`).join('') : `<div class="tb-muted">No ranked data yet. Run a scan first.</div>`}
+        </div>
+        <div class="tb-card">
+          <h3>Your Stock History Learning</h3>
+          <div class="tb-muted">When your API key allows current stock holdings, the backend records your stock snapshots over time and uses your recorded profit/loss as a small private prediction bonus or penalty. Shared global results help everyone, but personal holdings are not shown to other users.</div>
+          ${(data.user_stock_history || []).length ? (data.user_stock_history || []).map(h => `
+            <div class="tb-mini-row">
+              <span><b>${escapeHtml(h.acronym)}</b> <span class="tb-muted">${escapeHtml(h.name || '')}</span><br><span class="tb-muted">samples ${escapeHtml(h.samples || 0)} · last ${escapeHtml(h.last_seen || '')}</span></span>
+              <span>${h.avg_profit_pct == null ? 'Learning' : fmtPct(Number(h.avg_profit_pct || 0))}</span>
+            </div>`).join('') : `<div class="tb-muted">No personal stock history yet. It will start learning after scans if the user key allows stock holdings. Shared prediction history still works without it.</div>`}
         </div>
         <div class="tb-card">
           <h3>Drastic Change Rule</h3>
