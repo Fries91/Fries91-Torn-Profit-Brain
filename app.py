@@ -903,6 +903,81 @@ def init_db():
 
 init_db()
 
+# Step 10.2: lightweight user feedback for prediction quality.
+def init_step_10_2_db():
+    if USE_POSTGRES:
+        script = """
+        CREATE TABLE IF NOT EXISTS prediction_feedback (
+            id SERIAL PRIMARY KEY,
+            torn_id INTEGER NOT NULL,
+            module TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            feedback TEXT NOT NULL,
+            context_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
+            ON prediction_feedback(module, created_at);
+        """
+    else:
+        script = """
+        CREATE TABLE IF NOT EXISTS prediction_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            torn_id INTEGER NOT NULL,
+            module TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            feedback TEXT NOT NULL,
+            context_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(torn_id) REFERENCES users(torn_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prediction_feedback_module_time
+            ON prediction_feedback(module, created_at);
+        """
+    with db() as conn:
+        conn.executescript(script)
+
+init_step_10_2_db()
+
+
+def data_strength_label(samples):
+    try:
+        n = int(samples or 0)
+    except Exception:
+        n = 0
+    if n >= 500:
+        return "High"
+    if n >= 80:
+        return "Medium"
+    if n >= 15:
+        return "Low+"
+    return "Learning"
+
+
+def risk_label(signal=None, confidence=None, data_strength=None):
+    sig = str(signal or "").upper()
+    try:
+        conf = float(confidence or 0)
+    except Exception:
+        conf = 0
+    if sig in ("WAIT", "HOLD", "WATCH") and conf < 65:
+        return "WAIT"
+    if conf >= 78 and data_strength in ("High", "Medium"):
+        return "SAFE"
+    if conf >= 60:
+        return "GOOD"
+    if sig in ("BUY", "GO", "PICK", "SELL"):
+        return "RISKY"
+    return "LEARNING"
+
+
+TOS_TEXT = """AI🫰 Fries91 Torn Brain is a Torn companion tool in active development. It provides predictions and suggestions only. It does not guarantee profit, does not auto-buy, does not auto-sell, and does not perform actions on your Torn account. Use all predictions at your own risk.
+
+Privacy: your Torn API key is stored on the backend so the app can read Torn data for analysis. Your API key, personal holdings, and personal stock history are private. Shared learning uses anonymous market outcomes, prediction accuracy, item/travel price history, and aggregate signals so the tool can improve for everyone. Personal holdings are not shown to other users.
+
+By using the tool, you agree that it is experimental, may be wrong, and should be treated as decision support rather than financial certainty inside Torn."""
+
 
 def mask_key(key: str) -> str:
     if not key:
@@ -3208,7 +3283,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.1-learning-visibility",
+        "step": "10.2-user-friendly",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3217,7 +3292,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso(), "version": "step10.1-learning-visibility", "database": "postgres" if USE_POSTGRES else "sqlite"})
+    return jsonify({"ok": True, "time": now_iso(), "version": "step10.2-user-friendly", "database": "postgres" if USE_POSTGRES else "sqlite"})
 
 
 @app.get("/static/<path:filename>")
@@ -3327,7 +3402,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.1-learning-visibility",
+        "step": "10.2-user-friendly",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -3336,7 +3411,7 @@ def state():
             "stock_brain": "active",
             "item_market": "active",
             "travel_profit": "active",
-            "lite_focus": "active_step_10_1"
+            "lite_focus": "active_step_10_2"
         },
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else {"enabled": 1, "last_scan_at": None, "next_scan_at": None, "last_ok": 0, "last_error": None, "scans_completed": 0},
@@ -3371,6 +3446,26 @@ def dashboard():
     travel = latest_travel_profit(torn_id)
     enemy = latest_enemy_activity(torn_id)
 
+    stock_learning = stock_learning_summary(torn_id)
+    stock_samples = int(stock_learning.get("global_results_checked") or 0) + int(stock_learning.get("user_stock_snapshots") or 0)
+    item_samples = sum(int((x.get("stats") or {}).get("count7") or 0) for x in items) if isinstance(items, list) else 0
+    travel_samples = int((travel or {}).get("snapshot_count") or 0) if isinstance(travel, dict) else 0
+    health = {
+        "watcher": "Online" if auto and int(auto["last_ok"] or 0) == 1 else ("Waiting" if auto else "Starting"),
+        "last_scan": auto["last_scan_at"] if auto else None,
+        "next_scan": auto["next_scan_at"] if auto else None,
+        "last_error": auto["last_error"] if auto else None,
+        "database": "postgres" if USE_POSTGRES else "sqlite",
+    }
+    data_strength = {
+        "stock": data_strength_label(stock_samples),
+        "item": data_strength_label(item_samples),
+        "travel": data_strength_label(travel_samples),
+        "stock_samples": stock_samples,
+        "item_samples": item_samples,
+        "travel_samples": travel_samples,
+    }
+
     best_move = {"label": "Learning", "detail": "Waiting for more snapshots", "signal": "WAIT"}
     try:
         if travel.get("best") and travel["best"].get("signal") == "GO":
@@ -3392,14 +3487,16 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.1-learning-visibility",
+        "step": "10.2-user-friendly",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
         "auto_scan": dict(auto) if auto else None,
         "best_move": best_move,
         "stock_pick": stock,
-        "stock_learning": stock_learning_summary(torn_id),
+        "stock_learning": stock_learning,
+        "health": health,
+        "data_strength": data_strength,
         "items": items,
         "points": {
             "latest": points.get("latest"),
@@ -3415,6 +3512,96 @@ def dashboard():
         },
         "latest_alerts": [dict(r) for r in latest_alerts],
     })
+
+
+
+@app.get("/api/tos")
+@require_auth
+def tos():
+    return jsonify({"ok": True, "tos": TOS_TEXT, "privacy_note": "API keys and personal holdings stay private. Anonymous prediction outcomes help the global brain."})
+
+
+@app.post("/api/feedback")
+@require_auth
+def prediction_feedback():
+    payload = request.get_json(silent=True) or {}
+    module = str(payload.get("module") or "general")[:40]
+    target = str(payload.get("target") or payload.get("target_name") or "Unknown")[:120]
+    feedback = str(payload.get("feedback") or "useful").lower()[:20]
+    if feedback not in ("useful", "bad", "neutral"):
+        feedback = "neutral"
+    context = payload.get("context") or {}
+    stamp = now_iso()
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO prediction_feedback(torn_id, module, target_name, feedback, context_json, created_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (request.user["torn_id"], module, target, feedback, json.dumps(context)[:2000], stamp),
+        )
+    return jsonify({"ok": True, "message": "Feedback saved. Thanks for helping the brain learn."})
+
+
+@app.post("/api/quick-setup")
+@require_auth
+def quick_setup():
+    torn_id = request.user["torn_id"]
+    key = get_api_key(torn_id)
+    added = []
+    skipped = []
+    popular = ["Xanax", "Donator Pack", "Feathery Hotel Coupon", "Morphine", "First Aid Kit", "Erotic DVD", "Plushie", "Flower"]
+    try:
+        # Make sure the item catalog has something to search.
+        existing = find_catalog_items("Xanax", 1)
+        if not existing and key:
+            refresh_item_catalog(key)
+    except Exception:
+        pass
+    stamp = now_iso()
+    with db() as conn:
+        for q in popular:
+            try:
+                matches = find_catalog_items(q, 8)
+                if not matches:
+                    skipped.append(q)
+                    continue
+                # Prefer exact/contains matches and avoid random unrelated results.
+                ql = q.lower()
+                chosen = None
+                for m in matches:
+                    nm = str(m.get("name") or "").lower()
+                    if ql == nm or ql in nm:
+                        chosen = m
+                        break
+                chosen = chosen or matches[0]
+                conn.execute(
+                    """
+                    INSERT INTO item_watchlist(torn_id, item_id, name, buy_zone, sell_zone, enabled, created_at, updated_at)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(torn_id, item_id) DO UPDATE SET
+                        enabled=1,
+                        updated_at=excluded.updated_at
+                    """,
+                    (torn_id, int(chosen["item_id"]), chosen["name"], None, None, 1, stamp, stamp),
+                )
+                added.append({"item_id": int(chosen["item_id"]), "name": chosen["name"]})
+            except Exception:
+                skipped.append(q)
+    enable_auto_scan(torn_id, immediate=True)
+    try:
+        perform_stock_scan_for_user(torn_id, reason="quick_setup")
+    except Exception:
+        pass
+    try:
+        scan_item_market_for_user(torn_id, reason="quick_setup")
+    except Exception:
+        pass
+    try:
+        scan_travel_profit_for_user(torn_id, reason="quick_setup")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "added": added, "skipped": skipped, "message": f"Quick setup complete. Added {len(added)} watched items and started backend scanning."})
 
 
 @app.get("/api/settings")
@@ -3440,6 +3627,8 @@ def get_settings():
         "travel_min_arrival_chance": "45",
         "travel_items_per_trip": "29",
         "auto_scan_enabled": "true",
+        "compact_mode": "true",
+        "tos_accepted": "false",
     }
     with db() as conn:
         rows = conn.execute("SELECT setting_key, setting_value FROM settings WHERE torn_id=?", (request.user["torn_id"],)).fetchall()
@@ -3471,6 +3660,8 @@ def save_settings():
         "travel_min_arrival_chance",
         "travel_items_per_trip",
         "auto_scan_enabled",
+        "compact_mode",
+        "tos_accepted",
     }
     changed = {}
     with db() as conn:
