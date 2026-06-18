@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.1-learning-visibility
-// @description  Lite self-learning Torn profit app. Step 10.2.2: focused Stock, Item, Travel plus visible global/private stock learning stats.
+// @version      1.10.3-schemafix
+// @description  Lite self-learning Torn profit app. Step 10.3: focused Stock, Item, Travel plus runtime database schema fix.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -338,7 +338,7 @@
       #tb-icon { bottom: 72px; left: 14px; width: 34px; height: 34px; font-size: 15px; }
     }
 
-    /* Step 10.2.2 Stock Learning Focus: performance-first overrides */
+    /* Step 10.3 Stock Learning Focus: performance-first overrides */
     #tb-panel, #tb-icon, .tb-card, .tb-head, .tb-tabs, .tb-tab, .tb-btn, .tb-close { animation: none !important; transition: none !important; }
     #tb-panel:before, .tb-head:after, .tb-scan:after { display: none !important; }
     #tb-panel { box-shadow: 0 8px 26px rgba(0,0,0,.72) !important; background: rgba(5,10,7,.98) !important; }
@@ -522,7 +522,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.3</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
@@ -682,7 +682,7 @@
       const travelRisk = travel ? riskLabel(travel.signal, travel.arrival_chance, travelStrength) : 'LEARNING';
       body.innerHTML = `
         <div class="tb-card tb-dashboard-card">
-          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.2 Smooth</span></h3>
+          <h3>AI🫰 Profit Brain <span class="tb-pill tb-ai-pill">Step 10.3 Smooth</span></h3>
           <div class="tb-muted">Focused on Stock, Item Market, and Travel Profit only. Backend does the watching so PDA stays smooth.</div>
           <div class="tb-actions">
             <button class="tb-btn" id="tb-quick-setup">Quick Setup</button>
