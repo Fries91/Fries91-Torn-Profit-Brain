@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91 Torn Brain - Step 1 Shell
 // @namespace    Fries91.TornBrain
-// @version      1.10.13-stockpatterns
-// @description  Lite self-learning Torn profit app. Step 10.13: stock pattern engine with bounce, early turn, risky dip, breakout, and move-money scoring.
+// @version      1.10.14-fastcache
+// @description  Lite self-learning Torn profit app. Step 10.14: fast cached stock pattern engine to reduce TornPDA backend timeouts.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
