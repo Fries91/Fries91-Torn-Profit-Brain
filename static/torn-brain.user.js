@@ -587,7 +587,7 @@
         url: API_BASE + path,
         headers,
         data: body,
-        timeout: 45000,
+        timeout: 25000,
         onload: (res) => {
           let data;
           try { data = JSON.parse(res.responseText || '{}'); }
@@ -601,7 +601,7 @@
           }
           resolve(data);
         },
-        ontimeout: () => reject(new Error('Render timed out waking up. Wait 30 seconds and try again.')),
+        ontimeout: () => reject(new Error('Render timed out. Backend is busy scanning; reopen in 20 seconds or check /health.')),
         onerror: () => reject(new Error('Could not reach Render backend: ' + API_BASE.replace('https://', '') + '. Check Render deploy/logs.'))
       });
     });
@@ -690,7 +690,7 @@
     panel.id = 'tb-panel';
     panel.innerHTML = `
       <div class="tb-head">
-        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.13</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
+        <div class="tb-title">AI🫰 Fries91 Torn Brain <span class="tb-pill tb-ai-pill">Lite Focus 10.14</span><span class="tb-subtitle">Stock · Items · Travel</span></div>
         <button class="tb-close" id="tb-close">✕</button>
       </div>
       <div class="tb-tabs" id="tb-tabs"></div>
