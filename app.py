@@ -46,13 +46,13 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 @app.errorhandler(HTTPException)
 def _tb_http_error(e):
     # Always return JSON so TornPDA/userscript never sees an HTML error page.
-    return jsonify({"ok": False, "error": getattr(e, "description", str(e)), "status": getattr(e, "code", 500), "step": "10.12-server-json-fix"}), getattr(e, "code", 500)
+    return jsonify({"ok": False, "error": getattr(e, "description", str(e)), "status": getattr(e, "code", 500), "step": "10.14-fast-cache-timeout"}), getattr(e, "code", 500)
 
 
 @app.errorhandler(Exception)
 def _tb_unhandled_error(e):
     # Keep the overlay readable if Render hits a backend exception.
-    return jsonify({"ok": False, "error": "Backend error: " + str(e), "step": "10.12-server-json-fix"}), 500
+    return jsonify({"ok": False, "error": "Backend error: " + str(e), "step": "10.14-fast-cache-timeout"}), 500
 
 
 def now_iso():
@@ -1203,7 +1203,7 @@ def token_hash(token: str) -> str:
 def torn_get(section: str, selections: str, key: str, torn_id: str = ""):
     url = f"{TORN_API_BASE}/{section}/{torn_id}"
     params = {"selections": selections, "key": key}
-    r = requests.get(url, params=params, timeout=15)
+    r = requests.get(url, params=params, timeout=8)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict) and data.get("error"):
@@ -2151,7 +2151,7 @@ def fetch_item_market(api_key: str, item_id: int):
     # Classic Torn market endpoint shape. Kept isolated so API v2 can be swapped here later.
     url = f"{TORN_API_BASE}/market/{int(item_id)}"
     params = {"selections": "itemmarket", "key": api_key}
-    r = requests.get(url, params=params, timeout=15)
+    r = requests.get(url, params=params, timeout=8)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict) and data.get("error"):
@@ -3325,7 +3325,7 @@ def scan_interval_for_user(conn, torn_id: int) -> int:
     except Exception:
         minutes = 15
     # Keep Render/Torn smooth: no aggressive spam scans.
-    return max(5, min(240, minutes))
+    return max(15, min(240, minutes))
 
 
 def enable_auto_scan(torn_id: int, immediate: bool = True):
@@ -3578,7 +3578,7 @@ def due_auto_scan_users():
             LEFT JOIN settings s ON s.torn_id = u.torn_id AND s.setting_key='auto_scan_enabled'
             WHERE COALESCE(a.enabled, 1)=1
               AND COALESCE(s.setting_value, 'true')='true'
-            LIMIT 25
+            LIMIT 3
             """
         ).fetchall()
     due = []
@@ -3598,11 +3598,11 @@ def auto_scanner_loop():
                 # Lite focus mode: only run the modules that matter for profit prediction.
                 # This keeps Render + TornPDA smoother and stops wasting calls on unused modules.
                 perform_stock_scan_for_user(torn_id, reason="auto")
-                time.sleep(0.8)
+                time.sleep(1.5)
                 scan_item_market_for_user(torn_id, reason="auto")
-                time.sleep(0.8)
+                time.sleep(1.5)
                 scan_travel_profit_for_user(torn_id, reason="auto")
-                time.sleep(1.2)
+                time.sleep(2.0)
         except Exception:
             pass
         time.sleep(35)
@@ -3973,7 +3973,7 @@ def index():
     return jsonify({
         "ok": True,
         "app": "Fries91 Torn Brain",
-        "step": "10.12-server-json-fix",
+        "step": "10.14-fast-cache-timeout",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "message": "Backend online. PostgreSQL is used when DATABASE_URL is set; SQLite fallback stays available."
@@ -3985,7 +3985,7 @@ def health():
     return jsonify({
         "ok": SCHEMA_BOOT_ERROR is None,
         "time": now_iso(),
-        "version": "step10.13-backend-boot-fix",
+        "version": "step10.14-fast-cache-timeout",
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "pg_driver": PG_DRIVER if USE_POSTGRES else None,
         "schema_boot_error": SCHEMA_BOOT_ERROR,
@@ -4101,7 +4101,7 @@ def state():
         ).fetchone()
     return jsonify({
         "ok": True,
-        "step": "10.12-server-json-fix",
+        "step": "10.14-fast-cache-timeout",
         "user": request.user,
         "tabs": [
             "Overview", "Stock Brain", "Item Market", "Travel Profit", "Settings"
@@ -4198,7 +4198,7 @@ def dashboard():
 
     return jsonify({
         "ok": True,
-        "step": "10.12-server-json-fix",
+        "step": "10.14-fast-cache-timeout",
         "user": request.user,
         "server_time": now_iso(),
         "unread_alerts": unread,
@@ -4882,6 +4882,248 @@ def accuracy_run():
 @require_auth
 def accuracy():
     return jsonify({"ok": True, **accuracy_dashboard(request.user["torn_id"])})
+
+
+
+# ---------------------------------------------------------------------------
+# Step 10.14: Fast cached endpoints for TornPDA
+# ---------------------------------------------------------------------------
+# The pattern engine can store a lot of stock rows. These helpers avoid doing
+# heavy per-stock scoring queries when the overlay simply needs to open fast.
+# Full scans still happen server-side; the PDA tabs read cached/latest results.
+
+def fast_cached_stock_rankings(torn_id: int, limit: int = 10):
+    rows = []
+    try:
+        with db() as conn:
+            rows = conn.execute(
+                """
+                SELECT acronym, name, pattern_label, pattern_confidence, pattern_score,
+                       support_touches, trend_1h_pct, trend_6h_pct, trend_24h_pct,
+                       position_7d, volatility_24h, reason, created_at
+                FROM stock_pattern_results
+                WHERE id IN (SELECT MAX(id) FROM stock_pattern_results GROUP BY acronym)
+                ORDER BY pattern_score DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except Exception:
+        rows = []
+    ranked = []
+    for r in rows:
+        d = dict(r)
+        ranked.append({
+            "stock_id": d.get("acronym"),
+            "acronym": d.get("acronym"),
+            "name": d.get("name") or d.get("acronym"),
+            "score": round(float(d.get("pattern_score") or 0), 2),
+            "confidence": round(float(d.get("pattern_confidence") or 0), 1),
+            "decision": d.get("pattern_label") or "Pattern Watch",
+            "pattern_label": d.get("pattern_label") or "Pattern Watch",
+            "pattern_confidence": d.get("pattern_confidence") or 0,
+            "support_touches": d.get("support_touches") or 0,
+            "trend_1h_pct": d.get("trend_1h_pct"),
+            "trend_6h_pct": d.get("trend_6h_pct"),
+            "trend_24h_pct": d.get("trend_24h_pct"),
+            "position_7d": d.get("position_7d"),
+            "volatility_24h": d.get("volatility_24h"),
+            "reason": d.get("reason") or "Cached stock pattern result.",
+            "created_at": d.get("created_at"),
+        })
+    if ranked:
+        return ranked
+    # Fallback: latest active prediction and recent snapshots, without expensive scoring.
+    try:
+        pick = latest_active_stock_pick()
+        if pick:
+            ranked.append({
+                "stock_id": pick.get("stock_id") or pick.get("acronym"),
+                "acronym": pick.get("acronym"),
+                "name": pick.get("name"),
+                "score": float(pick.get("score") or 0),
+                "confidence": float(pick.get("confidence") or 0),
+                "decision": pick.get("decision") or "Saved Pick",
+                "pattern_label": "Saved Pick",
+                "reason": pick.get("reason") or "Latest saved stock pick.",
+                "created_at": pick.get("created_at"),
+            })
+        with db() as conn:
+            latest = conn.execute(
+                """
+                SELECT acronym, name, current_price, created_at
+                FROM stock_snapshots
+                WHERE id IN (SELECT MAX(id) FROM stock_snapshots GROUP BY acronym)
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(0, limit - len(ranked)),),
+            ).fetchall()
+        seen = {str(x.get("acronym")).upper() for x in ranked}
+        for r in latest:
+            d = dict(r)
+            acr = str(d.get("acronym") or "").upper()
+            if acr in seen:
+                continue
+            ranked.append({
+                "stock_id": acr,
+                "acronym": acr,
+                "name": d.get("name") or acr,
+                "current_price": d.get("current_price"),
+                "score": 50.0,
+                "confidence": 25.0,
+                "decision": "Learning",
+                "pattern_label": "Learning",
+                "reason": "Waiting for more stored price history.",
+                "created_at": d.get("created_at"),
+            })
+    except Exception:
+        pass
+    return ranked[:limit]
+
+
+def fast_stock_move_status(torn_id: int, ranked_all=None):
+    try:
+        pick = latest_active_stock_pick()
+        watch = ensure_stock_move_watch(torn_id, pick)
+        ranked = ranked_all or fast_cached_stock_rankings(torn_id, 10)
+        best = ranked[0] if ranked else None
+        if not watch:
+            return {"status": "learning", "title": "Stock timer waiting", "message": "Run Stock Brain once to start a 24h review timer.", "due": False}
+        due_at = watch.get("due_at")
+        due_dt = iso_to_dt(due_at)
+        now_dt = datetime.now(timezone.utc)
+        due = bool(due_dt and due_dt <= now_dt)
+        current = str(watch.get("from_acronym") or "").upper()
+        best_acr = str((best or {}).get("acronym") or "").upper()
+        current_score = float((pick or {}).get("score") or 0)
+        best_score = float((best or {}).get("score") or 0)
+        score_gap = round(best_score - current_score, 2)
+        if not due:
+            remaining = due_dt - now_dt if due_dt else timedelta(0)
+            mins = max(0, int(remaining.total_seconds() // 60))
+            return {"status":"waiting", "title":"24h stock timer", "message":f"Review in {mins//60}h {mins%60}m.", "due":False, "current_acronym":current, "best_acronym":best_acr, "score_gap":score_gap, "due_at":due_at}
+        if best and best_acr and best_acr != current and score_gap >= 12:
+            return {"status":"move_review", "title":"Move Money Review", "message":f"{best_acr} is scoring {score_gap} points stronger than {current}. Review manually.", "due":True, "current_acronym":current, "best_acronym":best_acr, "score_gap":score_gap, "due_at":due_at, "best": best}
+        return {"status":"hold_review", "title":"24h Review Due", "message":"Review is due, but the current pick is still close enough. Check manually before moving.", "due":True, "current_acronym":current, "best_acronym":best_acr, "score_gap":score_gap, "due_at":due_at, "best": best}
+    except Exception as ex:
+        return {"status":"error", "title":"Stock timer error", "message":str(ex), "due":False}
+
+
+def dashboard_fast():
+    torn_id = request.user["torn_id"]
+    warnings = []
+    def safe(label, fallback, fn, *args):
+        try:
+            out = fn(*args)
+            return fallback if out is None else out
+        except Exception as ex:
+            warnings.append(f"{label}: {ex}")
+            return fallback
+    with db() as conn:
+        unread = conn.execute("SELECT COUNT(*) AS c FROM alerts WHERE torn_id=? AND is_read=0", (torn_id,)).fetchone()["c"]
+        latest_alerts = conn.execute("SELECT id, alert_type, title, body, link, is_read, created_at FROM alerts WHERE torn_id=? ORDER BY id DESC LIMIT 5", (torn_id,)).fetchall()
+        auto = conn.execute("SELECT enabled, last_scan_at, next_scan_at, last_ok, last_error, scans_completed FROM auto_scan_state WHERE torn_id=?", (torn_id,)).fetchone()
+    ranked = safe("stock patterns", [], fast_cached_stock_rankings, torn_id, 10)
+    stock = safe("stock pick", None, latest_active_stock_pick)
+    if not stock and ranked:
+        stock = ranked[0]
+    stock_move = safe("stock move", {"status":"learning", "message":"Waiting for cached stock timer."}, fast_stock_move_status, torn_id, ranked)
+    items = safe("items", [], latest_item_market_rows, torn_id)[:5]
+    travel = safe("travel", {"best": None, "snapshot_count": 0}, latest_travel_profit, torn_id)
+    stock_learning = safe("stock learning", {"global_results_checked":0, "user_stock_snapshots":0}, stock_learning_summary, torn_id)
+    stock_samples = int(stock_learning.get("global_results_checked") or 0) + int(stock_learning.get("user_stock_snapshots") or 0)
+    item_samples = sum(int((x.get("stats") or {}).get("count7") or 0) for x in items) if isinstance(items, list) else 0
+    travel_samples = int((travel or {}).get("snapshot_count") or 0) if isinstance(travel, dict) else 0
+    health = {
+        "watcher": "Online" if auto and int(auto["last_ok"] or 0) == 1 else ("Waiting" if auto else "Starting"),
+        "last_scan": auto["last_scan_at"] if auto else None,
+        "next_scan": auto["next_scan_at"] if auto else None,
+        "last_error": auto["last_error"] if auto else None,
+        "database": "postgres" if USE_POSTGRES else "sqlite",
+    }
+    brain_strength = safe("brain strength", {"score":0, "level":"Learning", "reason":"Waiting for cached samples."}, brain_strength_summary, torn_id, stock_learning, item_samples, travel_samples, auto)
+    best_move = {"label":"Learning", "detail":"Waiting for cached backend scans", "signal":"WAIT"}
+    try:
+        if travel.get("best") and travel["best"].get("signal") == "GO":
+            best_move = {"label":"Travel Profit", "detail":f"{travel['best'].get('country')} · {travel['best'].get('item_name')} · ${int(travel['best'].get('estimated_profit') or 0):,}", "signal":"GO"}
+        else:
+            buy_items = [x for x in items if x.get("signal") == "BUY"]
+            if buy_items:
+                best_move = {"label":"Item Market", "detail":f"{buy_items[0].get('name')} is in buy zone", "signal":"BUY"}
+            elif stock:
+                best_move = {"label":"Stock Brain", "detail":f"{stock.get('acronym')} · confidence {float(stock.get('confidence') or 0):.0f}%", "signal":"PICK"}
+    except Exception:
+        pass
+    return jsonify({
+        "ok": True,
+        "step": "10.14-fast-cache-timeout",
+        "user": request.user,
+        "server_time": now_iso(),
+        "unread_alerts": int(unread or 0),
+        "auto_scan": dict(auto) if auto else None,
+        "best_move": best_move,
+        "stock_pick": stock,
+        "stock_ranked": ranked,
+        "stock_move": stock_move,
+        "stock_learning": stock_learning,
+        "health": health,
+        "data_strength": {"stock": data_strength_label(stock_samples), "item": data_strength_label(item_samples), "travel": data_strength_label(travel_samples), "stock_samples": stock_samples, "item_samples": item_samples, "travel_samples": travel_samples},
+        "brain_strength": brain_strength,
+        "items": items,
+        "travel_best": travel.get("best") if isinstance(travel, dict) else None,
+        "latest_alerts": [dict(r) for r in latest_alerts],
+        "dashboard_warnings": warnings,
+    })
+
+
+def stocks_brain_fast():
+    torn_id = request.user["torn_id"]
+    warnings = []
+    ranked = fast_cached_stock_rankings(torn_id, 12)
+    pick = latest_active_stock_pick()
+    if not pick and ranked:
+        pick = ranked[0]
+    try:
+        with db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS c FROM stock_snapshots").fetchone()["c"]
+            user_hist = conn.execute(
+                """
+                SELECT acronym, name, COUNT(*) AS samples, AVG(estimated_profit_pct) AS avg_profit_pct,
+                       MAX(created_at) AS last_seen
+                FROM user_stock_holding_snapshots
+                WHERE torn_id=?
+                GROUP BY acronym, name
+                ORDER BY last_seen DESC
+                LIMIT 8
+                """,
+                (torn_id,),
+            ).fetchall()
+            pattern_rows = conn.execute(
+                """
+                SELECT acronym, name, pattern_label, pattern_confidence, pattern_score,
+                       support_touches, trend_1h_pct, trend_6h_pct, trend_24h_pct,
+                       position_7d, volatility_24h, reason, created_at
+                FROM stock_pattern_results
+                WHERE id IN (SELECT MAX(id) FROM stock_pattern_results GROUP BY acronym)
+                ORDER BY pattern_score DESC
+                LIMIT 12
+                """
+            ).fetchall()
+    except Exception as ex:
+        count = 0
+        user_hist = []
+        pattern_rows = []
+        warnings.append(str(ex))
+    move_status = fast_stock_move_status(torn_id, ranked)
+    return jsonify({"ok": True, "step":"10.14-fast-cache-timeout", "pick": pick, "ranked": ranked[:10], "snapshot_count": int(count or 0), "stock_move": move_status, "stock_learning": stock_learning_summary(torn_id), "user_stock_history": [dict(r) for r in user_hist], "stock_patterns": [dict(r) for r in pattern_rows], "diagnostics": {"note":"Fast cached mode: tab reads saved pattern results instead of recalculating every stock while TornPDA waits."}, "warnings": warnings, "server_time": now_iso()})
+
+# Replace the heavier route handlers with fast cached versions.
+try:
+    app.view_functions["dashboard"] = require_auth(dashboard_fast)
+    app.view_functions["stocks_brain"] = require_auth(stocks_brain_fast)
+except Exception:
+    pass
 
 
 start_background_scanner()
